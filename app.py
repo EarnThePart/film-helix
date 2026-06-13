@@ -16,7 +16,7 @@ if not os.path.exists(DB_PATH):
             repo_type="dataset",
             filename="movies.db",
             local_dir=".",
-            token=st.secrets["HF-TOKEN"]
+            token=st.secrets["HF_TOKEN"]
         )
 
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "be2bc809")
