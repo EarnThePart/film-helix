@@ -1,16 +1,19 @@
 import re
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import os
 import wordninja
-from recommender import FilmHelixEngine
+from recommender import FilmHelixEngine, normalize_keyword_token
 
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "be2bc809")
 
-# ── Content warning groups ─────────────────────────────────────────────────────
-# Keys = sidebar checkbox labels. Values = raw DTDD warning strings to match against.
+#content warning groups
 WARNING_GROUPS = {
-    "Violence & Gore": [
+    "Profanity": [
+        "There Is Obscene Language Gestures",
+    ],
+    "Violence / Gore": [
         "Theres Blood Gore", "Theres Excessive Gore", "Theres Audio Gore",
         "Theres Gun Violence", "Theres Torture", "Theres Amputation",
         "Theres Body Horror", "Theres Eye Mutilation", "Theres Finger Toe Mutilation",
@@ -18,19 +21,30 @@ WARNING_GROUPS = {
         "Someone Falls To Their Death", "Heads Get Squashed",
     ],
     "Sexual Content": [
-        "There Is Sexual Content", "There Are Nude Scenes",
-        "There Are Shower Scenes", "Someone Is Sexually Objectified",
+        "There Is Sexual Content", "There Are Shower Scenes",
+        "Someone Is Sexually Objectified",
     ],
     "Sexual Violence": [
         "Someone Is Sexually Assaulted", "Rape Is Mentioned",
+        "rape", "sexual_assault",
+        "attemptedrape", "childrape", "daterape", "gangrape", "lesbianrape",
+        "malerape", "maritalrape", "pregnancyfromrape", "prisonrape",
+        "rapeaccusation", "rapeandmurder", "rapeandrevenge", "raperevenge",
+        "rapeattempt", "rapeculture", "rapefantasy", "rapeofamale",
+        "rapeofapregnantwoman", "rapetrial", "rapevictim", "statutoryrape",
+        "teenagerape",
     ],
-    "Self-Harm & Suicide": [
+    "Nudity": [
+        "There Are Nude Scenes",
+    ],
+    "Suicide / Self-Harm": [
         "Someone Dies By Suicide", "Someone Attempts Suicide",
         "Someone Self Harms", "Theres Shaving Cutting",
     ],
     "Animal Harm": [
         "Theres Dog Fighting", "Animals Are Abused",
         "A Cat Dies", "A Dog Dies", "A Horse Dies",
+        "killingadog", "killing a dog", "dog dies", "animal abuse",
     ],
     "Child Abuse": [
         "Theres Child Abuse", "Theres Abusive Parents",
@@ -40,6 +54,18 @@ WARNING_GROUPS = {
         "Alcohol Abuse", "Someone Uses Drugs", "Theres Addiction",
         "Needles Syringes Are Used", "Someone Is Drugged",
     ],
+    "Spiders / Bugs": [
+        "There Are Spiders", "There Are Bugs", "Theres Bedbugs",
+    ],
+    "Snakes": [
+        "There Are Snakes",
+    ],
+    "Clowns": [
+        "There Are Clowns",
+    ],
+    "Claustrophobia": [
+        "Theres A Claustrophobic Scene", "Someone Is Restrained",
+    ],
     "Domestic Violence": [
         "Theres Domestic Violence", "A Woman Gets Slapped",
         "Someone Gets Gaslighted",
@@ -48,18 +74,8 @@ WARNING_GROUPS = {
         "Someone Speaks Hate Speech", "There Are Homophobic Slurs",
         "The R-Slur Is Used", "A Minority Is Misrepresented", "Theres Fat Jokes",
     ],
-    "Mental Health": [
-        "Someone Has A Meltdown", "Someone Has An Anxiety Attack",
-        "Someone Suffers From Ptsd", "Someone Has A Mental Illness",
-        "Theres Dissociation", "Depersonalization", "Or Derealization",
-        "Reality Is Unstable Or Unhinged",
-    ],
-    "Kidnapping & Confinement": [
+    "Kidnapping / Confinement": [
         "Someone Is Kidnapped", "Someones Mouth Is Covered", "Theres Incarceration",
-    ],
-    "Phobias & Fears": [
-        "Theres A Claustrophobic Scene", "Someone Is Restrained",
-        "There Are Snakes", "There Are Spiders", "Needles Syringes Are Used",
     ],
 }
 
@@ -67,26 +83,25 @@ st.set_page_config(page_title="Film Helix", page_icon="🧬", layout="wide")
 
 st.markdown("""
 <style>
-/* ── Badges ── */
+
 .imdb-badge  { background:#F5C518; color:#000; font-weight:900; font-size:0.95em; padding:3px 8px; border-radius:5px; margin-right:4px; white-space:nowrap; }
-.rt-badge    { background:#FA320A; color:#fff; font-weight:700; font-size:0.95em; padding:3px 8px; border-radius:5px; margin-right:4px; white-space:nowrap; }
+.rt-badge    { background: transparent !important; color: #f8fafc !important; font-weight: 700; font-size: 1.05em; padding: 0; display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; white-space: nowrap; }
 .match-badge { background:#1d4ed8; color:#fff; font-weight:700; font-size:0.95em; padding:3px 8px; border-radius:5px; margin-right:4px; white-space:nowrap; }
 
-/* ── Keyword / match tags ── */
 .keyword-tag {
     display: inline-block;
     background: #1e3a5f;
     color: #93c5fd;
-    font-size: 0.95em;
-    padding: 3px 10px;
-    border-radius: 12px;
+    font-size: 0.72em;
+    padding: 2px 7px;
+    border-radius: 10px;
     margin: 2px 3px 2px 0;
     border: 1px solid rgba(37,99,235,0.35);
     white-space: nowrap;
 }
-.matched-label { font-size:1.05em; color:#64748b; margin: 8px 0 4px; }
+.matched-label { font-size:0.78em; color:#64748b; margin: 6px 0 3px; }
+.matched-label-section { font-size:0.78em; color:#E8E8E8; font-weight:700; margin: 6px 0 3px; text-transform:uppercase; letter-spacing:0.05em; }
 
-/* ── Poster ── */
 .poster-wrap {
     width: 100%;
     aspect-ratio: 2 / 3;
@@ -98,10 +113,10 @@ st.markdown("""
     justify-content: center;
     position: relative;
 }
-/* CSS fallback emoji — always present behind the img, visible when img fails */
+
 .poster-wrap::after {
     content: '🧬';
-    font-size: 52px;
+    font-size: 39px;
     position: absolute;
     top: 50%;
     left: 50%;
@@ -119,9 +134,8 @@ st.markdown("""
     z-index: 1;
     background: #0f172a;
 }
-.poster-placeholder { font-size: 52px; }
+.poster-placeholder { font-size: 39px; }
 
-/* ── Row title + badge line ── */
 .row-title-line {
     display: flex;
     align-items: baseline;
@@ -130,20 +144,19 @@ st.markdown("""
     margin-bottom: 6px;
 }
 .row-title {
-    font-size: 1.8em;
+    font-size: 1.35em;
     font-weight: 700;
     color: #f1f5f9;
     line-height: 1.3;
     margin: 0;
 }
 .row-meta-inline {
-    font-size: 1.05em;
+    font-size: 0.80em;
     color: #64748b;
     margin-bottom: 6px;
 }
 
-/* ── Card text ── */
-.card-title   { font-size: 1.05em; font-weight: 700; margin: 6px 0 5px; color: #f1f5f9; line-height:1.3; }
+.card-title   { font-size: 0.80em; font-weight: 700; margin: 6px 0 5px; color: #f1f5f9; line-height:1.3; }
 .badge-row    { margin: 5px 0 7px; }
 .warning-txt  { font-size: 0.88em; color: #f87171; margin-top: 5px; }
 .warning-tag  {
@@ -158,12 +171,11 @@ st.markdown("""
     white-space: nowrap;
 }
 
-/* ── Aligned metadata + crew grid ── */
 .meta-grid {
     display: grid;
-    grid-template-columns: 125px 1fr;
-    gap: 4px 10px;
-    font-size: 1.05em;
+    grid-template-columns: 100px 1fr;
+    gap: 3px 8px;
+    font-size: 0.80em;
     margin: 8px 0 6px;
     align-items: start;
 }
@@ -171,19 +183,26 @@ st.markdown("""
 .meta-val { color: #94a3b8; line-height: 1.5; }
 .meta-divider { grid-column: 1 / -1; height: 6px; }
 
-/* ── Logline with CSS checkbox show-more/less (no JS) ── */
-.card-logline { font-size: 1.1em; color: #cbd5e1; line-height: 1.6; margin: 7px 0 4px; }
-input.lg-toggle { display: none; }
-.lg-short { font-size:1.1em; color:#cbd5e1; line-height:1.6; }
-.lg-full  { display:none; font-size:1.1em; color:#cbd5e1; line-height:1.6; }
-input.lg-toggle:checked + .lg-short { display: none; }
-input.lg-toggle:checked ~ .lg-full  { display: inline; }
-.lg-btn {
-    color: #60a5fa; cursor: pointer; font-size: 0.82em;
-    margin-left: 5px; text-decoration: none;
+.card-logline { font-size: 0.83em; color: #cbd5e1; line-height: 1.6; margin: 7px 0 4px; }
+details.plot-expander { font-size: 0.83em; color: #cbd5e1; line-height: 1.6; margin: 7px 0 4px; }
+details.plot-expander summary { list-style: none; cursor: pointer; }
+details.plot-expander summary::-webkit-details-marker { display: none; }
+details.plot-expander .plot-short { display: inline; }
+details.plot-expander .plot-full  { display: none; }
+details.plot-expander[open] .plot-short { display: none; }
+details.plot-expander[open] .plot-full  { display: inline; }
+
+details.dna-overflow { display: block; }
+details.dna-overflow summary { list-style: none; cursor: pointer; display: block; margin-top: 4px; }
+details.dna-overflow summary::-webkit-details-marker { display: none; }
+details.dna-overflow summary::after {
+    color: #60a5fa; font-size: 0.78em; text-decoration: underline;
+    text-underline-offset: 2px;
+}
+details.dna-overflow[open] summary::after {
+    content: 'show less'; display: block; text-align: left;
 }
 
-/* ── Source header bar ── */
 .source-header {
     background: #1e293b;
     border: 1px solid #334155;
@@ -197,8 +216,41 @@ input.lg-toggle:checked ~ .lg-full  { display: inline; }
 .source-title { color: #e2e8f0; font-size: 1.05em; font-weight: 600; }
 .source-meta  { color: #94a3b8; font-size: 0.9em; }
 
-/* ── Navigation buttons (Prev / Next) ── */
-div[data-testid="stButton"] > button {
+div[data-testid="stHorizontalBlock"]:has(> div.match-bar-col) {
+    background-color: #1e293b;
+    border-top: 1px solid #334155;
+    border-bottom: 1px solid #334155;
+    padding: 10px 0;
+    align-items: center;
+    margin-top: 18px;
+    margin-bottom: 12px;
+}
+div[data-testid="stHorizontalBlock"]:has(> div.match-bar-col) > div[data-testid="stColumn"] {
+    display: flex;
+    align-items: center;
+}
+.match-bar-count {
+    color: #ffffff;
+    font-size: 0.95em;
+    font-weight: 700;
+    line-height: 1;
+}
+
+div[data-testid="stButton"] > button[data-testid="baseButton-primary"] {
+    background: #f0d37c !important;
+    color: #0e172a !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-weight: 700 !important;
+    font-size: 0.95em !important;
+    padding: 8px 14px !important;
+}
+div[data-testid="stButton"] > button[data-testid="baseButton-primary"]:hover {
+    background: #e8c96a !important;
+    color: #0e172a !important;
+}
+
+div[data-testid="stButton"] > button[data-testid="baseButton-secondary"] {
     background: #334155 !important;
     color: #e2e8f0 !important;
     border: 1px solid #475569 !important;
@@ -207,13 +259,13 @@ div[data-testid="stButton"] > button {
     font-size: 0.80em !important;
     padding: 4px 14px !important;
 }
-div[data-testid="stButton"] > button:hover {
+
+div[data-testid="stButton"] > button[data-testid="baseButton-secondary"]:hover {
     background: #475569 !important;
     border-color: #64748b !important;
     color: #f1f5f9 !important;
 }
 
-/* ── Match Priority pills ── */
 div[data-testid="stPills"] button {
     font-size: 1.15em !important;
     font-weight: 700 !important;
@@ -223,7 +275,6 @@ div[data-testid="stPills"] button {
     border-radius: 22px !important;
 }
 
-/* ── Match Priority label ── */
 div[data-testid="stPills"] > label {
     font-size: 1.1em !important;
     font-weight: 700 !important;
@@ -232,7 +283,6 @@ div[data-testid="stPills"] > label {
     display: block !important;
 }
 
-/* ── Nav arrow buttons (tertiary) ── */
 button[kind="tertiary"],
 [data-testid="stBaseButton-tertiary"] {
     background: transparent !important;
@@ -250,7 +300,7 @@ button[kind="tertiary"]:hover,
     color: #e2e8f0 !important;
     background: transparent !important;
 }
-/* ── Page number buttons — strip box via sibling marker ── */
+
 #pagination-nums ~ * button,
 #pagination-nums ~ * .stButton button {
     background: transparent !important;
@@ -270,15 +320,12 @@ button[kind="tertiary"]:hover,
     background: transparent !important;
 }
 
-/* ── Sidebar slider labels only ── */
 [data-testid="stSlider"] [data-testid="stWidgetLabel"] p {
     font-size: 1.0em !important;
     font-weight: 700 !important;
     letter-spacing: 0.06em !important;
-    text-transform: uppercase !important;
 }
 
-/* ── Checkboxes: compact height, vertically centered ── */
 [data-testid="stCheckbox"] {
     min-height: unset !important;
     padding: 0 !important;
@@ -301,7 +348,7 @@ button[kind="tertiary"]:hover,
     flex-shrink: 0 !important;
     margin-top: 0 !important;
 }
-/* Collapse the Streamlit element-container wrapper around each checkbox */
+
 .element-container:has([data-testid="stCheckbox"]) {
     min-height: unset !important;
     margin-top: 0 !important;
@@ -309,7 +356,7 @@ button[kind="tertiary"]:hover,
     padding-top: 0 !important;
     padding-bottom: 0 !important;
 }
-/* Target the stVerticalBlock inside expanders that pads checkbox rows */
+
 [data-testid="stExpander"] [data-testid="stVerticalBlock"] {
     gap: 0 !important;
 }
@@ -317,10 +364,69 @@ button[kind="tertiary"]:hover,
     padding-top: 4px !important;
     padding-bottom: 4px !important;
 }
+
+div[data-testid="stButton"] > button[kind="secondary"],
+div[data-testid="stButton"] > button {
+    border: 1px solid #334155 !important;
+}
+div[data-testid="stButton"] > button:focus,
+div[data-testid="stButton"] > button:focus-visible {
+    border: 1px solid #475569 !important;
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+[data-testid="stFormSubmitButton"] button,
+[data-testid="stForm"] button {
+    background-color: #f0d37c !important;
+    color: #0e172a !important;
+    border: none !important;
+    font-weight: 700 !important;
+    font-size: 1.0em !important;
+    width: 100% !important;
+}
+[data-testid="stFormSubmitButton"] button p,
+[data-testid="stForm"] button p {
+    color: #0e172a !important;
+    font-weight: 700 !important;
+    font-size: 1.1em !important;
+}
+[data-testid="stFormSubmitButton"] button:hover,
+[data-testid="stForm"] button:hover {
+    background-color: #F5C518 !important;
+    color: #0e172a !important;
+}
+[data-testid="stFormSubmitButton"] button:hover p,
+[data-testid="stForm"] button:hover p {
+    color: #0e172a !important;
+}
+
+[data-testid="stExpander"] {
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+[data-testid="stForm"] {
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+[data-testid="stSelectbox"] > div > div {
+    background-color: #1A2530 !important;
+}
+
+div[data-testid="stToggle"] label > div[data-checked="true"] {
+    background-color: #1E3A5F !important;
+}
+div[data-testid="stToggle"] label > div[data-checked="true"] > div {
+    background-color: #D1D5DB !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# ── Language code → display name ──────────────────────────────────────────────
+#convert language to display-friendly string
 LANG_NAMES = {
     'en': 'English',    'fr': 'French',     'de': 'German',     'es': 'Spanish',
     'it': 'Italian',    'ja': 'Japanese',   'ko': 'Korean',     'zh': 'Mandarin',
@@ -335,18 +441,37 @@ LANG_NAMES = {
     'bn': 'Bengali',    'mr': 'Marathi',    'gu': 'Gujarati',   'pa': 'Punjabi',
 }
 
-# Reverse lookup: raw DTDD warning string (lowercase) → parent category label
+#reverse lookup DTDD string, convert to parent category label
 _WARNING_REVERSE = {
     s.lower(): label
     for label, strings in WARNING_GROUPS.items()
     for s in strings
 }
+#strip DTDD strings from DNA bubbles later
+_DTDD_TOKENS = frozenset(_WARNING_REVERSE.keys())
 
-if 'page' not in st.session_state:
-    st.session_state.page = 0
-if 'last_query' not in st.session_state:
-    st.session_state.last_query = ""
-
+if 'last_query' not in st.session_state:        st.session_state.last_query = ""
+if 'show_adv_match' not in st.session_state:    st.session_state.show_adv_match = False
+if 'show_adv_check' not in st.session_state:    st.session_state.show_adv_check = False
+if 'match_priority' not in st.session_state:    st.session_state.match_priority = "Balanced"
+if 'year_range' not in st.session_state:        st.session_state.year_range = (1920, 2026)
+if 'min_imdb' not in st.session_state:          st.session_state.min_imdb = 1.0
+if 'min_rt' not in st.session_state:            st.session_state.min_rt = 0
+if 'exclude_non_english' not in st.session_state:  st.session_state.exclude_non_english = False
+if 'exclude_animated' not in st.session_state:     st.session_state.exclude_animated = False
+if 'app_initialized' not in st.session_state:
+    st.session_state.exclude_lesser_known = True
+    st.session_state.exclude_sequels      = True
+    st.session_state.app_initialized      = True
+if 'exclude_lesser_known' not in st.session_state: st.session_state.exclude_lesser_known = True
+if 'exclude_sequels' not in st.session_state:      st.session_state.exclude_sequels = True
+if 'sensitive_toggle' not in st.session_state:     st.session_state.sensitive_toggle = False
+if 'show_warnings_toggle' not in st.session_state: st.session_state.show_warnings_toggle = False
+if 'sort_order' not in st.session_state:           st.session_state.sort_order = "Match Percentage"
+#content warnings default to false on first load
+for _wg in WARNING_GROUPS:
+    if f'warn_{_wg}' not in st.session_state:
+        st.session_state[f'warn_{_wg}'] = False
 
 @st.cache_resource
 def load_engine():
@@ -362,6 +487,8 @@ except Exception as e:
     st.error(f"System Error: {e}")
     st.stop()
 
+_df_sorted = engine.df.sort_values('vote_count', ascending=False)
+_ordered_titles = _df_sorted['display_title'].unique().tolist()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_omdb_data(imdb_id, title, year):
@@ -401,9 +528,9 @@ def _lang_display(code):
     return LANG_NAMES.get(code.lower().strip(), code)
 
 
-# Film-specific vocabulary wordninja doesn't know (Italian/Japanese/genre terms etc.)
+#genre fixes (from wordninja errors)
 _FILM_VOCAB = {
-    'giallo': 'Giallo', 'neonoir': 'Neo Noir', 'filmnoir': 'Film Noir',
+    'giallo': 'Giallo', 'neonoir': 'Neo-noir', 'filmnoir': 'Film Noir',
     'femmefatale': 'Femme Fatale', 'bodyhorror': 'Body Horror',
     'slasherfilm': 'Slasher Film', 'grindhouse': 'Grindhouse',
     'blaxploitation': 'Blaxploitation', 'cyberpunk': 'Cyberpunk',
@@ -412,18 +539,85 @@ _FILM_VOCAB = {
     'chanbara': 'Chanbara', 'wuxia': 'Wuxia', 'jidaigeki': 'Jidaigeki',
     'americangiallo': 'American Giallo', 'italiangiallo': 'Italian Giallo',
     'eurohorror': 'Euro Horror', 'nunsploitation': 'Nunsploitation',
-    # Location/place names that wordninja mangles
+    #wordninja fixes
+    'highschool': 'High School',
+    '16th_century': '16th Century', '17th_century': '17th Century',
+    '18th_century': '18th Century', '19th_century': '19th Century',
+    'antiquity': 'Antiquity', 'medieval': 'Medieval',
+    'burnedatthestake': 'Burned at the Stake',
+    'loveofoneslife': 'Love of Ones Life',
+    'mayacivilization': 'Maya Civilization', 'incanempire': 'Incan Empire',
+    'post911': 'Post-9/11', 'goodversusevil': 'Good vs Evil',
     'hongkong': 'Hong Kong', 'newyork': 'New York', 'losangeles': 'Los Angeles',
     'sanfrancisco': 'San Francisco', 'newjersey': 'New Jersey',
     'washingtondc': 'Washington D.C.', 'lasvegas': 'Las Vegas',
     'nasa': 'NASA', 'cia': 'CIA', 'fbi': 'FBI', 'kgb': 'KGB', 'irs': 'IRS',
+    'swat': 'SWAT Team', 'lapd': 'LAPD',
+    'nsa': 'National Security Agency', 'usa': 'USA',
+    'lgbt': 'LGBT', 'hiv': 'HIV', 'ufo': 'UFO', 'lsd': 'LSD', 'bdsm': 'BDSM',
+    'mi6': 'MI6', 'nypd': 'NYPD', 'vhs': 'VHS', 'dna': 'DNA', 'raf': 'RAF',
+    'dea': 'DEA', 'y2k': 'Y2K', 'ussr': 'USSR', 'nri': 'NRI', 'edm': 'EDM',
+    'atf': 'ATF', 'iss': 'ISS', 'kkk': 'KKK', 'cdc': 'CDC', 'wmd': 'WMD',
+    'gps': 'GPS', 'sms': 'SMS', 'atm': 'ATM', 'gmo': 'GMO', 'bnd': 'BND',
+    'pta': 'PTA',
     'sciencefiction': 'Science Fiction', 'tvmovie': 'TV Movie',
+    'worldwari': 'World War I', 'worldwarii': 'World War II',
+    'wwi': 'World War I', 'wwii': 'World War II',
+    'artificialintelligence': 'Artificial Intelligence',
+    'artificialintelligence(a.i.)': 'Artificial Intelligence',
+    'centralintelligenceagency': 'CIA',
+    'centralintelligenceagency(cia)': 'CIA',
+    #relationship tags
+    'fatherdaughterrelationship': 'Father-Daughter Relationship',
+    'fatherandsonrelationship': 'Father-Son Relationship',
+    'fathersonrelationship': 'Father-Son Relationship',
+    'motherdaughterrelationship': 'Mother-Daughter Relationship',
+    'mothersonrelationship': 'Mother-Son Relationship',
+    'brothersisterrelationship': 'Brother-Sister Relationship',
+    'brotherbrotherrelationship': 'Brother-Brother Relationship',
+    'sistersisterrelationship': 'Sister-Sister Relationship',
+    'siblingrelationship': 'Sibling Relationship',
+    'husbandwiferelationship': 'Husband-Wife Relationship',
+    'parentchildrelationship': 'Parent-Child Relationship',
+    'teacherstudentrelationship': 'Teacher-Student Relationship',
+    'studentmentorrelationship': 'Student-Mentor Relationship',
+    'masterdisciplerelationship': 'Master-Disciple Relationship',
+    'masterservantrelationship': 'Master-Servant Relationship',
+    'doctorpatientrelationship': 'Doctor-Patient Relationship',
+    'employeebossrelationship': 'Employee-Boss Relationship',
+    'employeremployeerelationship': 'Employer-Employee Relationship',
+    'grandfathergranddaughterrelationship': 'Grandfather-Granddaughter Relationship',
+    'grandfathergrandsonrelationship': 'Grandfather-Grandson Relationship',
+    'grandmothergranddaughterrelationship': 'Grandmother-Granddaughter Relationship',
+    'grandmothergrandsonrelationship': 'Grandmother-Grandson Relationship',
+    'grandparentgrandchildrelationship': 'Grandparent-Grandchild Relationship',
+    'grandma-grandsonrelationship': 'Grandmother-Grandson Relationship',
+    'stepfatherstepdaughterrelationship': 'Stepfather-Stepdaughter Relationship',
+    'stepfatherstepsonrelationship': 'Stepfather-Stepson Relationship',
+    'stepmotherstepdaughterrelationship': 'Stepmother-Stepdaughter Relationship',
+    'stepmotherstepsonrelationship': 'Stepmother-Stepson Relationship',
+    'stepparentstepchildrelationship': 'Stepparent-Stepchild Relationship',
+    'unclenephewrelationship': 'Uncle-Nephew Relationship',
+    'uncleniecerelationship': 'Uncle-Niece Relationship',
+    'auntnephewrelationship': 'Aunt-Nephew Relationship',
+    'auntniecerelationship': 'Aunt-Niece Relationship',
+    'cousincousinrelationship': 'Cousin-Cousin Relationship',
+    'humanandroidrelationship': 'Human-Android Relationship',
+    'humananimalrelationship': 'Human-Animal Relationship',
+    'humanvampirerelationship': 'Human-Vampire Relationship',
+    'manwomanrelationship': 'Man-Woman Relationship',
+    'boygirlrelationship': 'Boy-Girl Relationship',
+    'boyfriendgirlfriendrelationship': 'Boyfriend-Girlfriend Relationship',
+    'adultery': 'Infidelity',
+    'extramaritalaffair': 'Infidelity',
+    'cheating': 'Infidelity',
+    'infidelity': 'Infidelity',
 }
 
 
 
 def _fix_name_prefixes(name):
-    """Rejoin split Irish/Scottish surname prefixes: 'Ian Mc Shane' → 'Ian McShane'"""
+    #rejoin split Irish/Scottish surname prefixes: Ian Mc Shane → Ian McShane
     parts = name.split()
     result = []
     i = 0
@@ -441,18 +635,216 @@ def _format_token(w):
     wl = w.lower()
     if wl in _FILM_VOCAB:
         return _FILM_VOCAB[wl]
-    # Decade/century patterns: "1970s", "2000s", "19th" etc. — keep lowercase suffix
+    #decade/century patterns: "1970s", "2000s", "19th"
     if re.match(r'^\d{2,4}[a-z]+$', wl):
         return wl
     camel = re.sub(r'([a-zà-ÿ])([A-Z])', r'\1 \2', w)
+    #add space after initials: "F.Murray" → "F. Murray", "G.P.Cosmatos" → "G. P. Cosmatos"
+    camel = re.sub(r'([A-Za-z]\.)([A-Za-z])', r'\1 \2', camel)
     if camel != w:
         return _fix_name_prefixes(camel)
     parts = wordninja.split(wl)
-    # If wordninja produced single-char fragments it failed — return title-cased original
+
     if parts and min(len(p) for p in parts) <= 1:
         return w.title()
     return ' '.join(p.title() for p in parts)
 
+
+def format_bubble_tag(tag):
+    _CUSTOM = {
+        'espionage intelligence':            'Espionage / Intelligence',
+        'afterlife metaphysical':            'Metaphysical / Afterlife',
+        'afterlife / metaphysical':          'Metaphysical / Afterlife',
+        'metaphysical / afterlife':          'Metaphysical / Afterlife',
+        'supernatural occult':               'Supernatural / Occult',
+        'supernatural / occult':             'Supernatural / Occult',
+        'tech corporate':                    'Tech / Corporate',
+        'tech / corporate':                  'Tech / Corporate',
+        'cold clinical':                     'Cold / Clinical',
+        'cold and clinical':                 'Cold / Clinical',
+        'procedural methodical':             'Procedural / Methodical',
+        'ensemble no single lead':           'Ensemble Cast',
+        'antisocialpersonalitydisorder':     'Antisocial Personality Disorder',
+        'antisocial personality disorder':   'Antisocial Personality Disorder',
+        'central intelligence agency':       'CIA',
+        'wilderness frontier':               'Wilderness / Frontier',
+        'dying and death':                   'Dying / Death',
+        'dying death':                       'Dying / Death',
+        'suspicion of murder':               'Suspicion of Murder',
+        'suspicionofmurder':                 'Suspicion of Murder',
+        'loss of loved one':                 'Loss of Loved One',
+        'loss_of_loved_one':                 'Loss of Loved One',
+    }
+    tl = tag.lower().strip()
+    if tl in _CUSTOM:
+        return _CUSTOM[tl]
+    _LOWER_WORDS = {'and', 'as', 'vs', 'by', 'of', 'the', 'in', 'on', 'for', 'with',
+                    'or', 'del', 'de', 'von', 'van', 'la', 'le', 'di'}
+    words = tag.replace('_', ' ').split()
+    if not words:
+        return tag
+    result = [words[0].capitalize()]
+    for w in words[1:]:
+        result.append(w.lower() if w.lower() in _LOWER_WORDS else w.capitalize())
+    return ' '.join(result)
+
+
+def deduplicate_tags(tags):
+    seen_lower = set()
+    deduped = []
+    for tag in tags:
+        tl = tag.lower()
+        if tl not in seen_lower:
+            seen_lower.add(tl)
+            deduped.append(tag)
+    return deduped
+
+
+def _helix_label(tag):
+    #convert dom_domestic_suburban → Domestic Suburban, style_slow_burn → Slow Burn
+    for prefix in ('dom_', 'style_', 'helix_pro_', 'helix_dyn_', 'helix_thm_',
+                   'helix_str_', 'helix_ton_', 'helix_spl_', 'pro_', 'dyn_',
+                   'thm_', 'str_', 'ton_', 'spl_'):
+        if tag.startswith(prefix):
+            tag = tag[len(prefix):]
+            break
+    return tag.replace('_', ' ').title()
+
+_UI_BLOCKLIST = {
+    'dom_domestic_suburban', 'domestic_suburban',
+    'dom_urban_civic', 'urban_civic',
+    'style_classical_invisible', 'classical_invisible', 'classical invisible',
+    'killed during sex', 'killedduringsex',
+}
+
+HIDDEN_TAGS = {
+    'plot_twist', 'plot twist', 'plottwist',
+    'rape', 'sexual assault', 'sexual_assault',
+    'depressing',
+    'based on book', 'based_on_book', 'basedonbook',
+    'anime', 'fantasy', 'adventure',
+    'heist thriller', 'heistthriller',
+    'political thriller', 'politicalthriller', 'political_thriller',
+    'legal drama', 'legaldrama', 'legal_drama',
+    'legal thriller', 'legalthriller', 'legal_thriller',
+    'psychological thriller', 'psychologicalthriller', 'psychological_thriller',
+    'crime thriller', 'crimethriller', 'crime_thriller',
+    'action thriller', 'actionthriller', 'action_thriller',
+    'spy thriller', 'spythriller', 'spy_thriller',
+    'supernatural thriller', 'supernaturalthriller', 'supernatural_thriller',
+    'mystery thriller', 'mysterythriller', 'mystery_thriller',
+    'horror comedy', 'horrorcomedy', 'horror_comedy',
+    'dramedy',
+    'drama',
+}
+
+_HELIX_TON_TAGS = {
+    'bleak_and_oppressive', 'cold_and_clinical', 'cold and clinical',
+    'darkly_comic', 'dread_and_unease', 'dreamlike_and_surreal',
+    'epic_and_grandiose', 'hyper_stylized', 'intimate_and_naturalistic',
+    'meditative_and_slow', 'melancholic_and_elegiac',
+    'playful_and_irreverent', 'relentlessly_tense', 'warm_and_nostalgic',
+}
+# "Kinetic and Propulsive" is a style tag, not tone tag
+
+#geographic tokens for setting bucket
+_GEO_KEYWORD_TOKENS = {
+    'antiquity', 'medieval',
+    #US cities and states
+    'newyorkcity', 'losangeles', 'newyork', 'boston', 'massachusetts', 'chicago',
+    'sanfrancisco', 'texas', 'california', 'newjersey', 'washington', 'washingtondc',
+    'miami', 'lasvegas', 'neworleans', 'philadelphia', 'detroit', 'seattle',
+    'atlanta', 'dallas', 'houston', 'hawaii', 'alaska', 'florida', 'baltimore',
+    'usa',
+    #countries
+    'cuba', 'ireland', 'france', 'germany', 'italy', 'japan', 'korea', 'southkorea',
+    'china', 'india', 'russia', 'mexico', 'spain', 'brazil', 'morocco', 'egypt',
+    'australia', 'canada', 'argentina', 'colombia', 'peru', 'chile', 'venezuela',
+    'nigeria', 'southafrica', 'kenya', 'ethiopia', 'vietnam', 'thailand', 'indonesia',
+    'pakistan', 'bangladesh', 'iran', 'iraq', 'turkey', 'greece', 'portugal',
+    'sweden', 'norway', 'denmark', 'finland', 'poland', 'ukraine', 'romania',
+    'hungary', 'czechoslovakia', 'yugoslavia', 'austria', 'switzerland', 'belgium',
+    'netherlands', 'scotland', 'england', 'wales',
+    #international cities
+    'london', 'paris', 'tokyo', 'seoul', 'beijing', 'shanghai', 'hongkong', 'hong-kong',
+    'mumbai', 'delhi', 'rome', 'berlin', 'sydney', 'toronto', 'montreal',
+    'moscow', 'istanbul', 'cairo', 'lagos', 'nairobi', 'bangkok', 'singapore',
+    'amsterdam', 'vienna', 'prague', 'warsaw', 'budapest', 'dublin', 'lisbon',
+    'barcelona', 'madrid', 'milan', 'naples', 'sicily',
+}
+
+def _is_decade_token(t):
+    return bool(re.fullmatch(r'\d{4}s', t.strip()))
+
+def _is_future_decade_token(t):
+    m = re.fullmatch(r'(\d{4})s', t.strip())
+    return bool(m) and int(m.group(1)) >= 2030
+
+def _is_century_token(t):
+    return bool(re.fullmatch(r'(16|17|18|19)th_century', t.strip().lower()))
+
+def _bucket_tags(shared_helix_str, shared_keywords_str, total_helix_raw, threshold=0.3):
+    #splits helix and keyword tags into three buckets, return deduplicated lists
+    raw_kw = [t.strip() for t in shared_keywords_str.split(',') if t.strip()] if shared_keywords_str else []
+
+    pairs = []
+    for t in raw_kw:
+        #strip DTDD warnings from match bubbles
+        if t.lower() in _DTDD_TOKENS:
+            continue
+        label = _keyword_display(t)
+        if t.lower() in ('depressing', 'serene', 'mischievous', 'lighthearted', 'earnest',
+                         'playful', 'satire', 'vibrant', 'sentimental', 'melancholy',
+                         'tragic', 'melodramatic', 'somber', 'farcical', 'irreverent',
+                         'gentle', 'wry', 'wistful', 'sardonic', 'tearjerker',
+                         'heartfelt', 'melodrama', 'lyrical', 'feelgood', 'darkcomedy'):
+            pairs.append((label, 'tone'))
+            continue
+        if t.lower() in HIDDEN_TAGS or label.lower() in HIDDEN_TAGS:
+            continue
+        if _is_future_decade_token(t):
+            pairs.append(('Future', 'setting'))
+        elif _is_decade_token(t) or _is_century_token(t) or t.lower() in _GEO_KEYWORD_TOKENS:
+            pairs.append((label, 'setting'))
+        else:
+            pairs.append((label, 'story'))
+
+    if shared_helix_str and total_helix_raw >= threshold:
+        for tag in [t.strip() for t in shared_helix_str.split(',') if t.strip()]:
+            tl = tag.lower()
+            if any(b in tl for b in _UI_BLOCKLIST):
+                continue
+            if tl in HIDDEN_TAGS:
+                continue
+            label = format_bubble_tag(_helix_label(tag))
+            _is_tone = (tl in _HELIX_TON_TAGS
+                        or tl.startswith(('ton_', 'spl_'))
+                        or (tl.startswith('style_') and 'kinetic' not in tl))
+            if tl.startswith('dom_'):
+                pairs.append((label, 'setting'))
+            elif _is_tone:
+                pairs.append((label, 'tone'))
+            else:
+                pairs.append((label, 'story'))
+
+    #dedup across all labels
+    seen_dedup = []
+    deduped_pairs = []
+    for label, bucket in pairs:
+        pattern = r'\b' + re.escape(label.lower()) + r'\b'
+        if not any(re.search(pattern, s.lower()) for s in seen_dedup):
+            seen_dedup.append(label)
+            deduped_pairs.append((label, bucket))
+
+    setting    = [l for l, b in deduped_pairs if b == 'setting']
+    tone_style = [l for l, b in deduped_pairs if b == 'tone']
+    story_dna  = [l for l, b in deduped_pairs if b == 'story']
+    return setting, tone_style, story_dna
+
+
+def _keyword_display(raw_token):
+    """Format a raw TMDB keyword token for display."""
+    return ' '.join(_format_token(w) for w in raw_token.split())
 
 def _keyword_tags_html(shared_str, min_display_chars=3):
     if not shared_str:
@@ -469,14 +861,12 @@ def _keyword_tags_html(shared_str, min_display_chars=3):
         if display.lower() not in seen:
             seen.add(display.lower())
             readable.append(display)
-    # Prefer shortest distinct concepts: process shortest terms first,
-    # drop longer ngrams that are supersets of an already-shown shorter term.
+
     sorted_by_len = sorted(readable, key=lambda t: len(t.split()))
     final = []
     for term in sorted_by_len:
         words = set(term.lower().split())
-        # Skip if any already-accepted term's words are a subset of this term
-        # (i.e. this term is just a longer version of something already shown)
+
         if any(set(f.lower().split()).issubset(words) for f in final):
             continue
         final.append(term)
@@ -500,40 +890,39 @@ def _name_tags_html(shared_str):
     return ''.join(tags)
 
 
+_MULTI_WORD_GENRES = ['Science Fiction', 'TV Movie']
+
 def _format_genres(genres_str):
-    return ' · '.join(_format_token(g.strip()) for g in genres_str.split() if g.strip())
+    normalized = genres_str
+    for mg in _MULTI_WORD_GENRES:
+        normalized = normalized.replace(mg, mg.replace(' ', ''))
+    return ' · '.join(_format_token(g.strip()) for g in normalized.split() if g.strip())
 
 
-def _logline_html(overview, uid, truncate=160):
-    """Truncated logline with pure-CSS show more/less toggle (no JS).
-    Uses hidden checkbox + label trick: clicking 'show more' checks the box,
-    CSS swaps visibility between short and full text spans.
-    Text is HTML-escaped to prevent injection from wiki plots or overview text.
-    """
+def _render_logline(overview, uid, truncate=280):
+    """Render a truncatable summary using HTML <details> for flicker-free expand/collapse."""
     import html as _html
     if not overview:
-        return ''
+        return
     safe = _html.escape(overview)
     if len(overview) <= truncate:
-        return f'<div class="card-logline">{safe}</div>'
+        st.markdown(f'<div class="card-logline">{safe}</div>', unsafe_allow_html=True)
+        return
     short = _html.escape(overview[:truncate].rstrip())
-    cid = f'lg{abs(hash(uid)) % 9999999}'
-    return (
-        f'<input type="checkbox" id="{cid}" class="lg-toggle">'
-        f'<span class="lg-short">{short}… '
-        f'<label for="{cid}" class="lg-btn">show more</label></span>'
-        f'<span class="lg-full">{safe} '
-        f'<label for="{cid}" class="lg-btn">show less</label></span>'
+    st.markdown(
+        f'<details class="plot-expander">'
+        f'<summary>'
+        f'<span class="plot-short">{short}… <span style="color:#94a3b8; margin-left:5px;">show more</span></span>'
+        f'<span class="plot-full">{safe} <span style="color:#94a3b8; margin-left:5px;">show less</span></span>'
+        f'</summary>'
+        f'</details>',
+        unsafe_allow_html=True
     )
-
-
-PER_PAGE = 6
-
 
 def render_row(movie, show_warnings):
     col_poster, col_meta = st.columns([1, 3])
 
-    # ── Poster ────────────────────────────────────────────────────────────
+    #poster
     with col_poster:
         poster = movie.get('poster_resolved', '')
         if poster and poster.startswith('http'):
@@ -551,17 +940,22 @@ def render_row(movie, show_warnings):
                 unsafe_allow_html=True
             )
 
-    # ── Metadata column ───────────────────────────────────────────────────
+    #metadata column
     with col_meta:
-        # Title (Year) + badges on one line
+
         score = movie.get('score', '')
         imdb  = movie.get('rating', 0)
         rt    = movie.get('rt_resolved', 0)
+
+        #match %
         badges = f'<span class="match-badge">Match {score}</span>'
+
         if imdb:
             badges += f' <span class="imdb-badge">IMDb {float(imdb):.1f}</span>'
+
         if rt:
-            badges += f' <span class="rt-badge">🍅 {rt}%</span>'
+            rt_icon = "https://upload.wikimedia.org/wikipedia/commons/5/5b/Rotten_Tomatoes.svg" if int(rt) >= 60 else "https://upload.wikimedia.org/wikipedia/commons/5/52/Rotten_Tomatoes_rotten.svg"
+            badges += f' <span class="rt-badge"><img src="{rt_icon}" height="18" style="margin-bottom: 2px;"> {rt}%</span>'
         st.markdown(
             f'<div class="row-title-line">'
             f'<span class="row-title">{movie["title"]} ({movie["year"]})</span>'
@@ -570,7 +964,6 @@ def render_row(movie, show_warnings):
             unsafe_allow_html=True
         )
 
-        # Genre · Runtime · Language inline
         genres  = _clean(movie.get('genres', ''))
         runtime = _runtime_str(movie.get('runtime', ''))
         lang    = _clean(movie.get('lang', ''))
@@ -579,22 +972,22 @@ def render_row(movie, show_warnings):
         if runtime: meta_inline_parts.append(runtime)
         if lang:    meta_inline_parts.append(_lang_display(lang))
         if meta_inline_parts:
-            sep = '<span style="color:#94a3b8">&nbsp;|&nbsp;</span>'
             st.markdown(
-                f'<div class="row-meta-inline">{sep.join(meta_inline_parts)}</div>',
+                f'<div class="row-meta-inline">{" &nbsp;|&nbsp; ".join(meta_inline_parts)}</div>',
                 unsafe_allow_html=True
             )
 
-        # Director / Writer / Cast in meta-grid
         director  = _clean(movie.get('director', ''))
         writer    = _clean(movie.get('writer', ''))
         cast      = _clean(movie.get('cast', ''))
         cast_list = [c.strip() for c in cast.split(',') if c.strip()][:4] if cast else []
 
+        director_display = director.split(',')[0].strip() if director else ''
+
         crew_rows = []
-        if director:  crew_rows.append(('Directed by', director))
-        if writer:    crew_rows.append(('Written by',  writer))
         if cast_list: crew_rows.append(('Cast',        ', '.join(cast_list)))
+        if writer:    crew_rows.append(('Written by',  writer))
+        if director_display: crew_rows.append(('Directed by', director_display))
 
         if crew_rows:
             grid = '<div class="meta-grid">'
@@ -603,7 +996,7 @@ def render_row(movie, show_warnings):
             grid += '</div>'
             st.markdown(grid, unsafe_allow_html=True)
 
-        # Summary / logline
+        #summary and logline
         overview = _clean(movie.get('overview', ''))
         if overview:
             uid = movie['title'] + movie['year']
@@ -611,30 +1004,65 @@ def render_row(movie, show_warnings):
                 '<div class="meta-key" style="margin: 8px 0 3px">Summary</div>',
                 unsafe_allow_html=True
             )
-            st.markdown(_logline_html(overview, uid, truncate=200), unsafe_allow_html=True)
+            _render_logline(overview, uid, truncate=280)
 
-        # ── Match chips ───────────────────────────────────────────────────
-        kw_tags     = _keyword_tags_html(_clean(movie.get('shared_keywords', '')))
+        #match tags
         cast_tags   = _name_tags_html(_clean(movie.get('shared_cast', '')))
         dir_tags    = _name_tags_html(_clean(movie.get('shared_director', '')))
         writer_tags = _name_tags_html(_clean(movie.get('shared_writer', '')))
 
-        if kw_tags:
-            st.markdown(f'<div class="matched-label">Matched Plot DNA:</div>{kw_tags}', unsafe_allow_html=True)
-        if cast_tags:
-            st.markdown(f'<div class="matched-label">Shared cast:</div>{cast_tags}', unsafe_allow_html=True)
-        if dir_tags:
-            st.markdown(f'<div class="matched-label">Same director:</div>{dir_tags}', unsafe_allow_html=True)
-        if writer_tags:
-            st.markdown(f'<div class="matched-label">Same writer:</div>{writer_tags}', unsafe_allow_html=True)
-        if not any([kw_tags, cast_tags, dir_tags, writer_tags]):
+        clean_setting, clean_tone, clean_story = _bucket_tags(
+            _clean(movie.get('shared_helix', '')),
+            _clean(movie.get('shared_keywords', '')),
+            float(movie.get('total_helix_raw', 0) or 0),
+        )
+
+        has_any = any([clean_setting, clean_tone, clean_story, cast_tags, dir_tags, writer_tags])
+        if has_any:
+            _chip_left, _chip_right = st.columns(2)
+            with _chip_left:
+                if clean_setting:
+                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in clean_setting)
+                    st.markdown(f'<div class="matched-label-section">SETTING</div>{html}', unsafe_allow_html=True)
+                if clean_tone:
+                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in clean_tone)
+                    st.markdown(f'<div class="matched-label-section">TONE</div>{html}', unsafe_allow_html=True)
+                if cast_tags:
+                    st.markdown(f'<div class="matched-label-section">SHARED CAST</div>{cast_tags}', unsafe_allow_html=True)
+                if dir_tags:
+                    st.markdown(f'<div class="matched-label-section">SAME DIRECTOR</div>{dir_tags}', unsafe_allow_html=True)
+                if writer_tags:
+                    st.markdown(f'<div class="matched-label-section">SAME WRITER</div>{writer_tags}', unsafe_allow_html=True)
+            with _chip_right:
+                if clean_story:
+                    _vis = clean_story[:8]
+                    _ov  = clean_story[8:]
+                    html_vis = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _vis)
+                    if _ov:
+                        _ov_count = len(_ov)
+                        html_ov = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _ov)
+                        _uid_str = movie.get('title', '') + movie.get('year', '')
+                        _ov_cls = f'dna-ov-{abs(hash(_uid_str)) % 99999}'
+                        st.markdown(
+                            f'<style>details.{_ov_cls} summary::after {{ content: "+{_ov_count} more"; }}</style>'
+                            f'<div class="matched-label-section">STORY DNA</div>'
+                            f'<div>{html_vis}</div>'
+                            f'<details class="dna-overflow {_ov_cls}">'
+                            f'<summary></summary>'
+                            f'{html_ov}'
+                            f'</details>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(f'<div class="matched-label-section">STORY DNA</div>{html_vis}', unsafe_allow_html=True)
+        else:
             st.markdown(
                 '<div class="matched-label" style="color:#475569;font-style:italic">'
-                'Matched Plot DNA: narrative &amp; thematic similarity</div>',
+                'Matched on narrative &amp; thematic similarity</div>',
                 unsafe_allow_html=True
             )
 
-        # ── Content warnings ──────────────────────────────────────────────
+        #sensitive content warnings
         if show_warnings:
             warnings = _clean(movie.get('warnings', ''))
             if warnings:
@@ -655,7 +1083,7 @@ def render_row(movie, show_warnings):
                     )
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+#sidebar
 with st.sidebar:
     st.markdown(
         f'''<div style="text-align:center; padding:18px 0 24px">
@@ -665,90 +1093,204 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
+    st.markdown("""<style>
+
+        [data-testid='stSidebar'] {
+            background-color: #0e172a !important;
+            min-width: 420px !important;
+            max-width: 420px !important;
+        }
+        [data-testid='stSidebar'] * { word-wrap: break-word !important; white-space: normal !important; }
+
+        [data-testid='stSidebar'] .stSelectbox label,
+        [data-testid='stSidebar'] .stSelectbox label p {
+            font-size: 1.0em !important;
+            font-weight: 700 !important;
+            color: #D1D5DB !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.04em !important;
+        }
+
+        [data-testid='stSidebar'] [data-testid='stForm'] {
+            background-color: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+        }
+
+        [data-testid='stSidebar'] [data-testid='stForm'] label,
+        [data-testid='stSidebar'] [data-testid='stForm'] p,
+        [data-testid='stSidebar'] [data-testid='stForm'] span {
+            color: #ffffff !important;
+        }
+
+        [data-testid='stSidebar'] [role='switch'][aria-checked='true'] {
+            background-color: #1e3a5f !important;
+            border-color: #1e3a5f !important;
+        }
+        [data-testid='stSidebar'] .stToggle [data-checked="true"] > div,
+        [data-testid='stSidebar'] .stToggle [aria-checked="true"] {
+            background-color: #1e3a5f !important;
+        }
+
+        [data-testid='stSidebar'] [data-testid='stSlider'] [data-testid='stSliderTrackFill'] {
+            background-color: #f0d37c !important;
+        }
+        [data-testid='stSidebar'] [data-testid='stSlider'] [data-testid='stSliderThumb'] {
+            background-color: #f0d37c !important;
+            border-color: #f0d37c !important;
+        }
+
+        [data-testid='stSidebar'] [data-testid='stForm'] button {
+            background-color: #f0d37c !important;
+            color: #0e172a !important;
+            border: none !important;
+            font-weight: 700 !important;
+            text-transform: uppercase !important;
+            width: 100% !important;
+        }
+        [data-testid='stSidebar'] [data-testid='stForm'] button p {
+            color: #0e172a !important;
+            font-weight: 700 !important;
+            font-size: 1.1em !important;
+        }
+        [data-testid='stSidebar'] [data-testid='stForm'] button:hover {
+            background-color: #F5C518 !important;
+            color: #0e172a !important;
+        }
+        [data-testid='stSidebar'] [data-testid='stForm'] button:hover p {
+            color: #0e172a !important;
+        }
+    </style>""", unsafe_allow_html=True)
+    st.markdown("**SEARCH FOR A FILM:**")
     search_query = st.selectbox(
-        "Search for a film:",
-        options=[""] + engine.titles_list,
-        index=0,
-        placeholder="Type to search...",
-        key="search_box"
+        "select_film_label",
+        options=_ordered_titles,
+        index=None,
+        placeholder="Select a film to match",
+        key="search_box",
+        label_visibility="collapsed",
     )
 
-    st.markdown("---")
-
-    _PRIORITY_OPTIONS = ["Balanced", "Plot & Story", "Narrative", "Mood", "Cast", "Director", "Writer", "Genre"]
     _PRIORITY_MAP = {
         "Balanced":     "balanced",
-        "Plot & Story": "plot",
-        "Narrative":    "narrative",
-        "Mood":         "mood",
+        "Plot / Story": "plot",
+        "Genre":        "genre",
+        "Vibe":         "vibe",
         "Cast":         "cast",
         "Director":     "director",
         "Writer":       "writer",
-        "Genre":        "genre",
     }
 
-    selected_label = st.pills(
-        "MATCH PRIORITY",
-        options=_PRIORITY_OPTIONS,
-        selection_mode="single",
-        default="Balanced",
+    #match focus
+    st.subheader("Match Focus")
+    _MATCH_FOCUS_DISPLAY = {"Balanced": "Balanced (default)"}
+    st.selectbox(
+        "match_focus_label",
+        options=["Balanced", "Plot / Story", "Genre", "Vibe", "Cast", "Director", "Writer"],
+        format_func=lambda x: _MATCH_FOCUS_DISPLAY.get(x, x),
+        key="match_priority",
+        label_visibility="collapsed",
     )
-    priority = _PRIORITY_MAP.get(selected_label or "Balanced", "balanced")
 
-    st.markdown("---")
-    year_range = st.slider("RELEASE YEAR", 1920, 2026, (1970, 2026))
-    min_rating = st.slider("MIN IMDB RATING", 0.0, 10.0, 6.0, step=0.1, format="%.1f")
-    min_rt     = st.slider("MIN RT SCORE (%)", 0, 100, 0)
-    exclude_foreign = st.checkbox("Exclude Non-English Films", value=False)
-    exclude_animated = st.checkbox("Exclude Animated Films", value=False)
-    exclude_obscure = st.checkbox("Exclude lesser-known films (< 25K votes)", value=False)
+    priority = _PRIORITY_MAP.get(st.session_state.match_priority, "balanced")
+    selected_label = st.session_state.match_priority
 
-    with st.expander("Advanced Filters"):
-        exclude_sequels = st.checkbox("Exclude Sequels & Remakes", value=False)
+    #filters
+    st.subheader("Filters")
+    with st.container(border=True):
+        st.slider("Release Year", 1920, 2026, key="year_range")
+        st.slider("Minimum IMDb Rating", 1.0, 10.0, step=0.1, key="min_imdb")
+        st.slider("Minimum Rotten Tomatoes %", 0, 100, step=1, key="min_rt")
+        st.markdown("<hr style='margin:10px 0;opacity:0.2'>", unsafe_allow_html=True)
+        st.toggle("Exclude Lower Popularity Films", key="exclude_lesser_known")
+        st.toggle("Exclude Sequels/Prequels, Remakes/Reboots", key="exclude_sequels")
+        st.toggle("Exclude Non-English Films", key="exclude_non_english")
+        st.toggle("Exclude Animated Films", key="exclude_animated")
+        st.markdown("<hr style='margin:10px 0;opacity:0.2'>", unsafe_allow_html=True)
+        st.toggle("List Sensitive Content in Matches (SPOILERS!)", key="show_warnings_toggle")
+        st.toggle("Exclude Matches with Sensitive Content", key="sensitive_toggle")
+        st.caption("NOTE: Content warnings rely on community-sourced data and may be incomplete.")
 
-        st.markdown("---")
-        sensitive_content = st.checkbox(
-            "Consider Sensitive Content When Matching", value=False,
-            key="sensitive_toggle"
-        )
-        if sensitive_content:
-            show_warnings = st.checkbox("Show Warnings Below Movie Cards", value=False)
-            if show_warnings:
-                st.markdown("<p style='color:#FFD700;font-weight:700;margin-bottom:8px'>⚠️ WARNING: May result in spoilers.</p>", unsafe_allow_html=True)
-            st.caption("Uncheck to exclude films containing that content.")
-            excluded_warnings = set()
-            for group_label, group_strings in WARNING_GROUPS.items():
-                include = st.checkbox(group_label, value=True, key=f"warn_{group_label}")
-                if not include:
-                    excluded_warnings.update(s.lower() for s in group_strings)
-        else:
-            show_warnings = False
-            excluded_warnings = set()
+        _sensitive_open = st.session_state.get("sensitive_toggle", False)
+        if _sensitive_open:
+            st.caption("Check a category to exclude those films from results.")
+            _warn_keys = list(WARNING_GROUPS.keys())
+            _half = (len(_warn_keys) + 1) // 2
+            _wcol1, _wcol2 = st.columns(2)
+            for _idx, group_label in enumerate(_warn_keys):
+                _col = _wcol1 if _idx < _half else _wcol2
+                with _col:
+                    st.toggle(group_label, key=f"warn_{group_label}")
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-if search_query != st.session_state.last_query:
-    st.session_state.page = 0
-    st.session_state.last_query = search_query
+    show_warnings    = st.session_state.get("show_warnings_toggle", False)
+    exclude_sensitive = st.session_state.get("sensitive_toggle", False)
+    if exclude_sensitive:
+        excluded_warnings = set()
+        for group_label, triggers in WARNING_GROUPS.items():
+            if st.session_state.get(f"warn_{group_label}", False):
+                excluded_warnings.update(s.lower() for s in triggers)
+    else:
+        excluded_warnings = set()
 
+    year_range    = st.session_state.year_range
+    min_rating    = st.session_state.min_imdb
+    min_rt        = st.session_state.min_rt
+    exclude_foreign  = st.session_state.exclude_non_english
+    exclude_animated = st.session_state.exclude_animated
+    exclude_obscure  = st.session_state.exclude_lesser_known
+    exclude_sequels  = st.session_state.exclude_sequels
+
+#main
+_filter_state = (
+    search_query,
+    st.session_state.match_priority,
+    st.session_state.year_range,
+    st.session_state.min_imdb,
+    st.session_state.min_rt,
+    st.session_state.exclude_non_english,
+    st.session_state.exclude_animated,
+    st.session_state.exclude_lesser_known,
+    st.session_state.exclude_sequels,
+)
 if search_query:
-    with st.spinner("Sequencing Story DNA…"):
-        result = engine.get_recommendations(
-            display_title=search_query,
-            min_rating=min_rating,
-            min_rt=min_rt,
-            year_range=year_range,
-            exclude_foreign=exclude_foreign,
-            exclude_animated=exclude_animated,
-            exclude_obscure=exclude_obscure,
-            year_window=None,
-            priority=priority,
-            exclude_sequels=exclude_sequels,
-        )
+    _warn_state = tuple(st.session_state.get(f'warn_{wg}', False) for wg in WARNING_GROUPS)
+    _results_changed = (_filter_state != st.session_state.get('_cached_result_key'))
+    _warns_changed = (_warn_state != st.session_state.get('_cached_warn_key'))
+    if _results_changed:
+        with st.spinner("Sequencing Story DNA…"):
+            st.session_state['_cached_result'] = engine.get_recommendations(
+                display_title=search_query,
+                min_rating=min_rating,
+                min_rt=min_rt,
+                year_range=year_range,
+                exclude_foreign=exclude_foreign,
+                exclude_animated=exclude_animated,
+                exclude_obscure=exclude_obscure,
+                year_window=None,
+                priority=priority,
+                exclude_sequels=exclude_sequels,
+            )
+        st.session_state['_cached_result_key'] = _filter_state
+        st.session_state['_result_version'] = st.session_state.get('_result_version', 0) + 1
+    if _warns_changed:
+        st.session_state['_cached_warn_key'] = _warn_state
+        st.session_state['_result_version'] = st.session_state.get('_result_version', 0) + 1
+    result = st.session_state.get('_cached_result')
+
+    if (_results_changed or _warns_changed) and st.session_state.get('_result_version', 0) > 0:
+        _rv = st.session_state['_result_version']
+        components.html(f"""<script>
+/* v{_rv} */
+(function(){{
+  var el = window.parent.document.querySelector('[data-testid="stMain"]');
+  if (el) el.scrollTo({{top: 0, behavior: 'instant'}});
+}})();
+</script>""", height=0)
 
     if result and result['matches']:
         recs = result['matches']
 
-        # Filter out films matching any excluded content warning category
+        #sensitive content warning filters
         if excluded_warnings:
             def _has_excluded_warning(movie):
                 raw = movie.get('warnings', '')
@@ -758,64 +1300,366 @@ if search_query:
                 return bool(movie_warnings & excluded_warnings)
             recs = [m for m in recs if not _has_excluded_warning(m)]
 
-        total       = len(recs)
-        total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
-        page        = min(st.session_state.page, total_pages - 1)
-        start       = page * PER_PAGE
+        total = len(recs)
 
-        # Only fetch OMDb data for the 6 films on the current page — not all 50
-        page_movies = []
-        for movie in recs[start:start + PER_PAGE]:
+        #get posters and RT ratings
+        all_movies = []
+        for movie in recs:
             poster_url = movie.get('poster', '')
             if not isinstance(poster_url, str) or not poster_url.startswith('http'):
-                poster_url = None
+                poster_url = ''
             rt_val = int(movie.get('rt_score', 0) or 0)
-            if not poster_url or rt_val == 0:
-                omdb = fetch_omdb_data(movie.get('imdb_id'), movie['title'], movie['year'])
-                if not poster_url:
-                    poster_url = omdb['poster']
-                if rt_val == 0:
-                    rt_val = omdb['rt_score']
-            page_movies.append({**movie, 'poster_resolved': poster_url or '', 'rt_resolved': rt_val})
+            all_movies.append({**movie, 'poster_resolved': poster_url, 'rt_resolved': rt_val})
 
-        # ── Source header + inline navigation ─────────────────────────────
-        priority_display = selected_label or "Balanced"
-        st.markdown(
-            f'<div class="source-header">'
-            f'<span class="source-title">Matches for <strong>{result["source"]}</strong></span>'
-            f'<span class="source-meta">{total} matches &nbsp;·&nbsp; {priority_display}</span>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-        st.markdown("<div style='margin-top:18px'></div>", unsafe_allow_html=True)
+        #match focus labels
+        _PRIORITY_LABELS = {
+            "Balanced":     "Balanced Matches",
+            "Plot / Story": "Plot-focused Matches",
+            "Genre":        "Genre-focused Matches",
+            "Vibe":         "Vibe-focused Matches",
+            "Cast":         "Cast-focused Matches",
+            "Director":     "Director-focused Matches",
+            "Writer":       "Writer-focused Matches",
+        }
+        priority_display = _PRIORITY_LABELS.get(selected_label or "Balanced", f"{selected_label} Matches")
 
-        _l, nav_prev_col, nav_text_col, nav_next_col, _r = st.columns([3, 1, 2, 1, 3])
-        with nav_prev_col:
-            if page > 0 and st.button("❮", key="nav_prev", type="tertiary", use_container_width=True):
-                st.session_state.page = page - 1
-                st.rerun()
-        with nav_text_col:
+        #source film hero card
+        _src_matches = engine.df[engine.df['display_title'] == search_query]
+        _src_poster_url  = ''
+        #fix title duplicating year in display
+        _src_title_str   = result["source"].strip('"')
+        _src_year_str    = ''
+        _src_genres_str  = ''
+        _src_runtime_str = ''
+        _src_lang_str    = ''
+        _src_director    = ''
+        _src_writer      = ''
+        _src_cast        = ''
+        _src_overview    = ''
+        _src_setting, _src_tone, _src_story = [], [], []
+
+        if not _src_matches.empty:
+            _src_row = _src_matches.iloc[0]
+            _src_year_str    = str(_src_row.get('release_date', ''))[:4]
+            _src_genres_str  = _format_genres(str(_src_row.get('dna_genres', '') or ''))
+            _src_runtime_str = _runtime_str(_src_row.get('runtime', ''))
+            _src_lang_str    = _lang_display(str(_src_row.get('dna_lang', '') or ''))
+            _src_overview    = _clean(str(_src_row.get('overview', '') or ''))
+            _src_director    = engine._format_name_list(str(_src_row.get('dna_director', '') or ''))
+            _src_writer      = engine._format_name_list(str(_src_row.get('dna_writer', '') or ''))
+            _src_cast_full   = engine._format_name_list(str(_src_row.get('dna_cast', '') or ''))
+            _src_cast_list   = [c.strip() for c in _src_cast_full.split(',') if c.strip()][:4] if _src_cast_full else []
+            _src_cast        = ', '.join(_src_cast_list)
+
+            _src_imdb_id   = str(_src_row.get('tconst_x', '') or _src_row.get('tconst', '') or '')
+            _src_omdb      = fetch_omdb_data(_src_imdb_id, _src_title_str, _src_year_str)
+            _src_imdb_rat  = float(_src_row.get('vote_average', 0) or 0)
+            _src_rt        = int(_src_omdb.get('rt_score', 0) or 0) or int(_src_row.get('rt_score', 0) or 0)
+            if _src_omdb.get('poster'):
+                _src_poster_url = _src_omdb['poster']
+            elif str(_src_row.get('poster', '')).startswith('http'):
+                _src_poster_url = str(_src_row['poster'])
+
+            #collect helix tags together
+            _src_helix_tags = []
+            for _hcol in ('helix_dom', 'helix_sty', 'helix_pro', 'helix_dyn', 'helix_str', 'helix_thm', 'helix_ton'):
+                _val = str(_src_row.get(_hcol, '') or '')
+                for _t in _val.split('|'):
+                    _t = _t.strip()
+                    if _t and _t != 'nan':
+                        _src_helix_tags.append(_t)
+
+            _src_kw_tokens_base = [
+                normalize_keyword_token(t.strip().lower().replace('-', ''))
+                for t in str(_src_row.get('dna_keywords', '') or '').split() if t.strip()
+            ]
+            _shared_kw_tokens = set()
+            for _m in all_movies:
+                for _sk in str(_m.get('shared_keywords', '') or '').split(','):
+                    _sk = _sk.strip()
+                    if _sk:
+                        _shared_kw_tokens.add(_sk)
+            #merge shared tokens, put them in source match bubbles
+            _src_kw_tokens = list(dict.fromkeys(
+                _src_kw_tokens_base[:8] +
+                [t for t in _src_kw_tokens_base if t in _shared_kw_tokens and t not in _src_kw_tokens_base[:8]] +
+                [t for t in _shared_kw_tokens if t not in _src_kw_tokens_base]
+            ))
+            #strip DTDD tags
+            _src_kw_tokens = [t for t in _src_kw_tokens if t.lower() not in _DTDD_TOKENS]
+
+            #build, deduplicate all tags
+            _src_all_labels = []
+            for _t in _src_helix_tags:
+                if _t.lower() in _UI_BLOCKLIST:
+                    continue
+                _lbl = format_bubble_tag(_helix_label(_t))
+                _tl = _t.lower()
+                _is_tone = (_tl in _HELIX_TON_TAGS
+                            or _tl.startswith(('ton_', 'spl_'))
+                            or (_tl.startswith('style_') and 'kinetic' not in _tl))
+                if _tl.startswith('dom_'):
+                    _src_all_labels.append((_lbl, 'setting'))
+                elif _is_tone:
+                    _src_all_labels.append((_lbl, 'tone'))
+                else:
+                    _src_all_labels.append((_lbl, 'story'))
+            for _kw_t in _src_kw_tokens:
+                _kw_lbl = _keyword_display(_kw_t)
+                if _kw_t.lower() in ('depressing', 'serene', 'mischievous', 'lighthearted', 'earnest',
+                                      'playful', 'satire', 'vibrant', 'sentimental', 'melancholy',
+                                      'tragic', 'melodramatic', 'somber', 'farcical', 'irreverent',
+                                      'gentle', 'wry', 'wistful', 'sardonic', 'tearjerker',
+                                      'heartfelt', 'melodrama', 'lyrical', 'feelgood', 'darkcomedy'):
+                    _src_all_labels.append((_kw_lbl, 'tone'))
+                elif _is_future_decade_token(_kw_t):
+                    _src_all_labels.append(('Future', 'setting'))
+                elif _is_decade_token(_kw_t) or _is_century_token(_kw_t) or _kw_t.lower() in _GEO_KEYWORD_TOKENS:
+                    _src_all_labels.append((_kw_lbl, 'setting'))
+                else:
+                    _src_all_labels.append((_kw_lbl, 'story'))
+
+            #deduplicate tags
+            _seen_src = []
+            _deduped_src = []
+            for _lbl, _bkt in _src_all_labels:
+                _pat = r'\b' + re.escape(_lbl.lower()) + r'\b'
+                if not any(re.search(_pat, s.lower()) for s in _seen_src):
+                    _seen_src.append(_lbl)
+                    _deduped_src.append((_lbl, _bkt))
+
+            _src_setting = [l for l, b in _deduped_src if b == 'setting']
+            _src_tone    = [l for l, b in _deduped_src if b == 'tone']
+            _src_story   = [l for l, b in _deduped_src if b == 'story']
+
+        _hero_poster_col, _hero_meta_col = st.columns([1, 3])
+        with _hero_poster_col:
+            if _src_poster_url:
+                st.markdown(
+                    f'<div class="poster-wrap">'
+                    f'<img src="{_src_poster_url}" alt="{_src_title_str}" '
+                    f'onerror="this.style.display=\'none\';this.nextSibling.style.display=\'flex\'">'
+                    f'<span class="poster-placeholder" style="display:none">🧬</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    '<div class="poster-wrap"><span class="poster-placeholder">🧬</span></div>',
+                    unsafe_allow_html=True
+                )
+
+        with _hero_meta_col:
+            #append IMDB to metadata row
+            badges = ""
+            if _src_imdb_rat:
+                badges += f' <span class="imdb-badge">IMDb {_src_imdb_rat:.1f}</span>'
+            #append RT
+            if _src_rt:
+                rt_icon = "https://upload.wikimedia.org/wikipedia/commons/5/5b/Rotten_Tomatoes.svg" if int(_src_rt) >= 60 else "https://upload.wikimedia.org/wikipedia/commons/5/52/Rotten_Tomatoes_rotten.svg"
+                badges += f' <span class="rt-badge"><img src="{rt_icon}" height="18" style="margin-bottom: 2px;"> {_src_rt}%</span>'
             st.markdown(
-                f"<div style='text-align:center;color:#94a3b8;font-size:1.8em;font-weight:600;line-height:1.8'>"
-                f"Page {page + 1} of {total_pages}</div>",
+                f'<div class="row-title-line"><span class="row-title">{_src_title_str}</span><span class="badge-row">{badges}</span></div>',
                 unsafe_allow_html=True
             )
-        with nav_next_col:
-            if page < total_pages - 1 and st.button("❯", key="nav_next", type="tertiary", use_container_width=True):
-                st.session_state.page = page + 1
-                st.rerun()
-        st.markdown("<div style='margin-bottom:32px'></div>", unsafe_allow_html=True)
+            #metadata separator
+            _meta_parts = []
+            if _src_genres_str:  _meta_parts.append(_src_genres_str)
+            if _src_runtime_str: _meta_parts.append(_src_runtime_str)
+            if _src_lang_str:    _meta_parts.append(_src_lang_str)
+            if _meta_parts:
+                st.markdown(
+                    f'<div class="row-meta-inline">{" &nbsp;|&nbsp; ".join(_meta_parts)}</div>',
+                    unsafe_allow_html=True
+                )
 
+            #crew grid
+            _src_director_display = _src_director.split(',')[0].strip() if _src_director else ''
+            _hero_crew = []
+            if _src_cast:        _hero_crew.append(('Cast',        _src_cast))
+            if _src_writer:      _hero_crew.append(('Written by',  _src_writer))
+            if _src_director_display: _hero_crew.append(('Directed by', _src_director_display))
+            if _hero_crew:
+                _grid = '<div class="meta-grid">'
+                for _k, _v in _hero_crew:
+                    _grid += f'<div class="meta-key">{_k}</div><div class="meta-val">{_v}</div>'
+                _grid += '</div>'
+                st.markdown(_grid, unsafe_allow_html=True)
 
+            #plot summary
+            if _src_overview:
+                st.markdown('<div class="meta-key" style="margin:8px 0 3px">Summary</div>', unsafe_allow_html=True)
+                _render_logline(_src_overview, '_hero_' + _src_title_str[:20])
 
+            #DNA tags
+            _hero_left_col, _hero_right_col = st.columns(2)
+
+            def _src_tag_row_in(col, label, tags):
+                with col:
+                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in tags)
+                    st.markdown(
+                        f'<div style="margin-bottom:4px"><span class="matched-label">{label}</span>{html}</div>',
+                        unsafe_allow_html=True
+                    )
+
+            with _hero_left_col:
+                if _src_setting:
+                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _src_setting)
+                    st.markdown(f'<div class="matched-label-section">SETTING</div>{html}', unsafe_allow_html=True)
+                if _src_tone:
+                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _src_tone)
+                    st.markdown(f'<div class="matched-label-section">TONE</div>{html}', unsafe_allow_html=True)
+            with _hero_right_col:
+                if _src_story:
+                    _story_visible = _src_story[:8]
+                    _story_overflow = _src_story[8:]
+                    html_vis = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _story_visible)
+                    if _story_overflow:
+                        _ov_count = len(_story_overflow)
+                        html_ov = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _story_overflow)
+                        _ov_cls = f'dna-ov-{abs(hash(_src_title_str)) % 99999}'
+                        st.markdown(
+                            f'<style>details.{_ov_cls} summary::after {{ content: "+{_ov_count} more"; }}</style>'
+                            f'<div style="margin-bottom:4px"><div class="matched-label-section">STORY DNA</div>'
+                            f'<div>{html_vis}</div>'
+                            f'<details class="dna-overflow {_ov_cls}">'
+                            f'<summary></summary>'
+                            f'{html_ov}'
+                            f'</details></div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(f'<div style="margin-bottom:4px"><div class="matched-label-section">STORY DNA</div>{html_vis}</div>', unsafe_allow_html=True)
+
+            #source film content warnings
+            if show_warnings and not _src_matches.empty:
+                _src_warnings = _clean(str(_src_row.get('warnings', '') or ''))
+                if _src_warnings:
+                    _src_warn_cats = {}
+                    for _w in _src_warnings.split(','):
+                        _w = _w.strip()
+                        _cat = _WARNING_REVERSE.get(_w.lower())
+                        if _cat and _cat not in _src_warn_cats:
+                            _src_warn_cats[_cat] = True
+                    if _src_warn_cats:
+                        _wtags = ''.join(
+                            f'<span class="warning-tag">{c}</span>'
+                            for c in sorted(_src_warn_cats)
+                        )
+                        st.markdown(
+                            f'<div style="margin-top:6px">⚠ {_wtags}</div>',
+                            unsafe_allow_html=True
+                        )
+
+        #divider bar
+        st.markdown('''
+            <style>
+            div[data-testid="stHorizontalBlock"]:has(.divider-bar-anchor) {
+                background-color: #0f172a !important;
+                border-top: 1px solid #334155 !important;
+                border-bottom: 1px solid #334155 !important;
+                padding: 10px 15px !important;
+                border-radius: 4px !important;
+                align-items: center !important;
+            }
+            </style>
+        ''', unsafe_allow_html=True)
+
+        #changes ratio to 2:1, prevents selectbox text truncation
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            st.markdown(
+                f"<span class='divider-bar-anchor'></span>"
+                f"<div style='color: #f8fafc; font-weight: bold; font-size: 1.25em; position: relative; bottom: 6px; margin: 0; padding: 0;'>"
+                f"{total} {priority_display}</div>",
+                unsafe_allow_html=True
+            )
+
+        with col2:
+            _sort_choice = st.selectbox(
+                "Sort",
+                options=["Match Percentage", "Title (A - Z)", "Title (Z - A)", "Release Year (Newest First)", "Release Year (Oldest First)", "IMDb Rating (Highest First)", "RT Score (Highest First)"],
+                label_visibility="collapsed",
+                key="sort_order",
+            )
         st.markdown("<div style='margin-bottom:16px'></div>", unsafe_allow_html=True)
 
-        for i, movie in enumerate(page_movies):
+        def _score_int(m):
+            try: return int(str(m.get('score', '0')).replace('%', ''))
+            except: return 0
+
+        if _sort_choice == "Match Percentage":
+            all_movies = sorted(all_movies, key=_score_int, reverse=True)
+        elif _sort_choice == "Title (A - Z)":
+            all_movies = sorted(all_movies, key=lambda m: m.get('title', '').lower())
+        elif _sort_choice == "Title (Z - A)":
+            all_movies = sorted(all_movies, key=lambda m: m.get('title', '').lower(), reverse=True)
+        elif _sort_choice == "Release Year (Newest First)":
+            all_movies = sorted(all_movies, key=lambda m: m.get('year', '0'), reverse=True)
+        elif _sort_choice == "Release Year (Oldest First)":
+            all_movies = sorted(all_movies, key=lambda m: m.get('year', '9999'))
+        elif _sort_choice == "IMDb Rating (Highest First)":
+            all_movies = sorted(all_movies, key=lambda m: float(m.get('rating', 0) or 0), reverse=True)
+        elif _sort_choice == "RT Score (Highest First)":
+            all_movies = sorted(all_movies, key=lambda m: int(m.get('rt_resolved', 0) or 0), reverse=True)
+
+
+        components.html("""
+<script>
+(function(){
+  var pd = window.parent.document;
+  if (pd.getElementById('rtt-btn')) return;
+  var s = pd.createElement('style');
+  s.textContent = [
+    '#rtt-btn{',
+      'position:fixed;bottom:32px;right:32px;z-index:9999;',
+      'background:#0e172a;color:#f0d37c;',
+      'border:2px solid #f0d37c;border-radius:22px;',
+      'width:48px;height:48px;',
+      'cursor:pointer;overflow:hidden;white-space:nowrap;',
+      'transition:width 0.2s ease;padding:0;',
+      'font-family:sans-serif;',
+      'display:flex;align-items:center;justify-content:center;',
+    '}',
+    '#rtt-btn:hover{width:156px;}',
+    '#rtt-btn .rtt-a{',
+      'display:flex;align-items:center;justify-content:center;',
+      'font-size:1.6em;font-weight:700;line-height:1;',
+      'width:100%;height:100%;',
+    '}',
+    '#rtt-btn .rtt-l{',
+      'display:none;font-size:0.72em;font-weight:700;letter-spacing:0.08em;',
+    '}',
+    '#rtt-btn:hover .rtt-a{display:none;}',
+    '#rtt-btn:hover .rtt-l{display:inline;}'
+  ].join('');
+  pd.head.appendChild(s);
+  var b = pd.createElement('button');
+  b.id = 'rtt-btn';
+  b.innerHTML = '<span class="rtt-a">↑</span><span class="rtt-l">RETURN TO TOP</span>';
+  b.onclick = function() {
+    var el = pd.querySelector('[data-testid="stMain"]');
+    if (el) { el.scrollTop = 0; }
+  };
+  pd.body.appendChild(b);
+})();
+</script>
+""", height=0)
+
+        for i, movie in enumerate(all_movies):
             render_row(movie, show_warnings)
-            if i < len(page_movies) - 1:
+            if i < len(all_movies) - 1:
                 st.markdown("<div style='margin: 28px 0'></div>", unsafe_allow_html=True)
                 st.divider()
                 st.markdown("<div style='margin: 28px 0'></div>", unsafe_allow_html=True)
+
+        st.markdown("""<script>
+setTimeout(function(){
+    var el = document.querySelector('[data-testid="stMain"]');
+    if(el) el.scrollTop = 0;
+}, 500);
+</script>""", unsafe_allow_html=True)
 
     else:
         st.warning("No matches found. Try adjusting your filters.")
