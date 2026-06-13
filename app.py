@@ -5,6 +5,19 @@ import requests
 import os
 import wordninja
 from recommender import FilmHelixEngine, normalize_keyword_token
+from huggingface_hub import hf_hub_download
+
+DB_PATH = 'movies.db'
+
+if not os.path.exists(DB_PATH):
+    with st.spinner("Initializing..."):
+        hf_hub_download(
+            repo_id="EarnThePart/film-helix", 
+            repo_type="dataset",
+            filename="movies.db",
+            local_dir=".",
+            token=st.secrets["HF-TOKEN"]
+        )
 
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "be2bc809")
 
