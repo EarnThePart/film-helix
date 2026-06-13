@@ -1,0 +1,24 @@
+*
+#core files
+!app.py
+!recommender.py
+!weekly_refresh.py
+!test_engine.py
+!helix_tagger.py
+!reconcile_imdb.py
+
+#cache files from rebuild
+!semantic_embeddings_cache.npy
+!wiki_semantic_embeddings_cache.npy
+
+#data pipeline subfolder
+!data_pipeline/
+!data_pipeline/**
+
+#config
+!requirements.txt
+!README.md
+!.gitignore
+!.gitattributes
+!.streamlit/
+!.streamlit/**

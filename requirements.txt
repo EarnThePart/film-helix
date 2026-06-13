@@ -38,5 +38,5 @@ tornado==6.5.4
 typing_extensions==4.15.0
 tzdata==2025.3
 urllib3==2.6.2
-sentence-transformers>=3.0.0
 wordninja>=2.0.0
+python-dotenv
