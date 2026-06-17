@@ -41,3 +41,4 @@ tzdata==2025.3
 urllib3==2.6.2
 wordninja>=2.0.0
 python-dotenv
+sentence-transformers
