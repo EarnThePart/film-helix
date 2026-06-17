@@ -92,7 +92,15 @@ WARNING_GROUPS = {
     ],
 }
 
-st.set_page_config(page_title="Film Helix", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Film Helix", page_icon="🧬", layout="wide", initial_sidebar_state="auto")
+
+st.markdown("""
+    <style>
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
 
 st.markdown("""
 <style>
@@ -200,10 +208,19 @@ st.markdown("""
 details.plot-expander { font-size: 0.83em; color: #cbd5e1; line-height: 1.6; margin: 7px 0 4px; }
 details.plot-expander summary { list-style: none; cursor: pointer; }
 details.plot-expander summary::-webkit-details-marker { display: none; }
-details.plot-expander .plot-short { display: inline; }
-details.plot-expander .plot-full  { display: none; }
-details.plot-expander[open] .plot-short { display: none; }
-details.plot-expander[open] .plot-full  { display: inline; }
+details.plot-expander:not([open]) .plot-short {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+details.plot-expander:not([open]) .show-more-label { display: block; color: #94a3b8; margin-top: 2px; }
+details.plot-expander:not([open]) .plot-full  { display: none; }
+details.plot-expander:not([open]) .show-less-label { display: none; }
+details.plot-expander[open] .plot-short       { display: none; }
+details.plot-expander[open] .show-more-label  { display: none; }
+details.plot-expander[open] .plot-full        { display: block; }
+details.plot-expander[open] .show-less-label  { display: block; color: #94a3b8; margin-top: 2px; }
 
 details.dna-overflow { display: block; }
 details.dna-overflow summary { list-style: none; cursor: pointer; display: block; margin-top: 4px; }
@@ -573,6 +590,33 @@ _FILM_VOCAB = {
     'hitman': 'Hitman',
     'gangwar': 'Gang War',
     'longisland': 'Long Island',
+    'trappedinspace': 'Trapped in Space',
+    'lonelinessinspace': 'Loneliness in Space',
+    'prohibitionera': 'Prohibition Era',
+    'victorianera': 'Victorian Era',
+    'coldwarera': 'Cold War Era',
+    'edwardianera': 'Edwardian Era',
+    'mccarthyera': 'McCarthy Era',
+    'depressionera': 'Depression Era',
+    'reconstructionera': 'Reconstruction Era',
+    'georgianorregencyera': 'Georgian / Regency Era',
+    'communistera': 'Communist Era',
+    'turnofthecentury': 'Turn of the Century',
+    'harlemrenaissance': 'Harlem Renaissance',
+    'mexicanmuralistera': 'Mexican Muralist Era',
+    'beatgeneration': 'Beat Generation',
+    'edoperiod': 'Edo Period',
+    'meijiperiod': 'Meiji Period',
+    'kamakuraperiod': 'Kamakura Period',
+    'heianperiod': 'Heian Period',
+    'taishoperiod': 'Taisho Period',
+    'sengokuperiod': 'Sengoku Period',
+    'warringstatesperiod': 'Warring States Period',
+    'shouwaperiod': 'Shōwa Period',
+    'azuchi-momoyamaperiod': 'Azuchi-Momoyama Period',
+    'surfing': 'Surfing',
+    'deepspace': 'Deep Space',
+    'spaceship': 'Spaceship',
     'nasa': 'NASA', 'cia': 'CIA', 'fbi': 'FBI', 'kgb': 'KGB', 'irs': 'IRS',
     'swat': 'SWAT Team', 'lapd': 'LAPD',
     'nsa': 'National Security Agency', 'usa': 'USA',
@@ -772,7 +816,15 @@ _HELIX_TON_TAGS = {
 
 #geographic tokens for setting bucket
 _GEO_KEYWORD_TOKENS = {
-    'antiquity', 'medieval',
+    'antiquity', 'medieval', 'deepspace',
+    #historical eras and periods
+    'prohibitionera', 'victorianera', 'coldwarera', 'edwardianera', 'mccarthyera',
+    'depressionera', 'reconstructionera', 'georgianorregencyera', 'communistera',
+    'postwar', 'postwargermany', 'postwarjapan', 'postwarlife',
+    'turnofthecentury', 'harlemrenaissance', 'mexicanmuralistera', 'beatgeneration',
+    #japanese historical periods
+    'edoperiod', 'meijiperiod', 'kamakuraperiod', 'heianperiod', 'taishoperiod',
+    'sengokuperiod', 'warringstatesperiod', 'shouwaperiod', 'azuchi-momoyamaperiod',
     #US cities and states
     'newyorkcity', 'losangeles', 'newyork', 'boston', 'massachusetts', 'chicago',
     'sanfrancisco', 'texas', 'california', 'newjersey', 'washington', 'washingtondc',
@@ -787,7 +839,7 @@ _GEO_KEYWORD_TOKENS = {
     'pakistan', 'bangladesh', 'iran', 'iraq', 'turkey', 'greece', 'portugal',
     'sweden', 'norway', 'denmark', 'finland', 'poland', 'ukraine', 'romania',
     'hungary', 'czechoslovakia', 'yugoslavia', 'austria', 'switzerland', 'belgium',
-    'netherlands', 'scotland', 'england', 'wales',
+    'netherlands', 'scotland', 'england', 'wales', 'devon',
     'israel', 'palestine', 'georgia', 'philippines', 'afghanistan', 'iceland',
     'northkorea', 'jamaica', 'bahamas', 'nepal', 'serbia', 'congo', 'taiwan',
     'algeria', 'bulgaria', 'cambodia', 'syria', 'croatia', 'sudan', 'nicaragua',
@@ -817,7 +869,9 @@ def _is_future_decade_token(t):
     return bool(m) and int(m.group(1)) >= 2030
 
 def _is_century_token(t):
-    return bool(re.fullmatch(r'(16|17|18|19)th_century', t.strip().lower()))
+    tl = t.strip().lower()
+    return bool(re.fullmatch(r'(16|17|18|19)th_?century', tl) or
+                re.fullmatch(r'\d{1,2}(st|nd|rd|th)century(bc)?', tl))
 
 def _bucket_tags(shared_helix_str, shared_keywords_str, total_helix_raw, threshold=0.3):
     #splits helix and keyword tags into three buckets, return deduplicated lists
@@ -936,21 +990,22 @@ def _format_genres(genres_str):
     return ' · '.join(_format_token(g.strip()) for g in normalized.split() if g.strip())
 
 
-def _render_logline(overview, uid, truncate=280):
-    """Render a truncatable summary using HTML <details> for flicker-free expand/collapse."""
+def _render_logline(overview, uid):
+    """Render a summary with CSS line-clamp expand/collapse. No character-count truncation."""
     import html as _html
     if not overview:
         return
     safe = _html.escape(overview)
-    if len(overview) <= truncate:
+    if len(overview) <= 150:
         st.markdown(f'<div class="card-logline">{safe}</div>', unsafe_allow_html=True)
         return
-    short = _html.escape(overview[:truncate].rstrip())
     st.markdown(
         f'<details class="plot-expander">'
         f'<summary>'
-        f'<span class="plot-short">{short}… <span style="color:#94a3b8; margin-left:5px;">show more</span></span>'
-        f'<span class="plot-full">{safe} <span style="color:#94a3b8; margin-left:5px;">show less</span></span>'
+        f'<div class="plot-short">{safe}</div>'
+        f'<span class="show-more-label">show more</span>'
+        f'<div class="plot-full">{safe}</div>'
+        f'<span class="show-less-label">show less</span>'
         f'</summary>'
         f'</details>',
         unsafe_allow_html=True
@@ -1041,7 +1096,7 @@ def render_row(movie, show_warnings):
                 '<div class="meta-key" style="margin: 8px 0 3px">Summary</div>',
                 unsafe_allow_html=True
             )
-            _render_logline(overview, uid, truncate=280)
+            _render_logline(overview, uid)
 
         #match tags
         cast_tags   = _name_tags_html(_clean(movie.get('shared_cast', '')))
@@ -1056,21 +1111,13 @@ def render_row(movie, show_warnings):
 
         has_any = any([clean_setting, clean_tone, clean_story, cast_tags, dir_tags, writer_tags])
         if has_any:
-            _chip_left, _chip_right = st.columns(2)
+            _has_right = any([clean_setting, clean_tone, cast_tags, dir_tags, writer_tags])
+            if _has_right:
+                _chip_left, _chip_right = st.columns(2)
+            else:
+                _chip_left = st.container()
+                _chip_right = None
             with _chip_left:
-                if clean_setting:
-                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in clean_setting)
-                    st.markdown(f'<div class="matched-label-section">SETTING</div>{html}', unsafe_allow_html=True)
-                if clean_tone:
-                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in clean_tone)
-                    st.markdown(f'<div class="matched-label-section">STYLE & TONE</div>{html}', unsafe_allow_html=True)
-                if cast_tags:
-                    st.markdown(f'<div class="matched-label-section">SHARED CAST</div>{cast_tags}', unsafe_allow_html=True)
-                if dir_tags:
-                    st.markdown(f'<div class="matched-label-section">SAME DIRECTOR</div>{dir_tags}', unsafe_allow_html=True)
-                if writer_tags:
-                    st.markdown(f'<div class="matched-label-section">SAME WRITER</div>{writer_tags}', unsafe_allow_html=True)
-            with _chip_right:
                 if clean_story:
                     _vis = clean_story[:8]
                     _ov  = clean_story[8:]
@@ -1092,6 +1139,20 @@ def render_row(movie, show_warnings):
                         )
                     else:
                         st.markdown(f'<div class="matched-label-section">STORY DNA</div>{html_vis}', unsafe_allow_html=True)
+            if _chip_right is not None:
+                with _chip_right:
+                    if clean_setting:
+                        html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in clean_setting)
+                        st.markdown(f'<div class="matched-label-section">SETTING</div>{html}', unsafe_allow_html=True)
+                    if clean_tone:
+                        html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in clean_tone)
+                        st.markdown(f'<div class="matched-label-section">STYLE & TONE</div>{html}', unsafe_allow_html=True)
+                    if cast_tags:
+                        st.markdown(f'<div class="matched-label-section">SHARED CAST</div>{cast_tags}', unsafe_allow_html=True)
+                    if dir_tags:
+                        st.markdown(f'<div class="matched-label-section">SAME DIRECTOR</div>{dir_tags}', unsafe_allow_html=True)
+                    if writer_tags:
+                        st.markdown(f'<div class="matched-label-section">SAME WRITER</div>{writer_tags}', unsafe_allow_html=True)
         else:
             st.markdown(
                 '<div class="matched-label" style="color:#475569;font-style:italic">'
@@ -1609,7 +1670,7 @@ if search_query:
         with col1:
             st.markdown(
                 f"<span class='divider-bar-anchor'></span>"
-                f"<div style='color: #f8fafc; font-weight: bold; font-size: 1.25em; position: relative; bottom: 6px; margin: 0; padding: 0;'>"
+                f"<div style='color: #f0d079; font-weight: bold; font-size: 1.25em; position: relative; bottom: 6px; margin: 0; padding: 0; text-transform: uppercase; letter-spacing: 0.04em;'>"
                 f"{total} {priority_display}</div>",
                 unsafe_allow_html=True
             )
@@ -1681,6 +1742,25 @@ if search_query:
     if (el) { el.scrollTop = 0; }
   };
   pd.body.appendChild(b);
+  function fixExpanders() {
+    pd.querySelectorAll('details.plot-expander:not([data-of-checked])').forEach(function(det) {
+      det.setAttribute('data-of-checked', '1');
+      var short = det.querySelector('.plot-short');
+      if (!short) return;
+      requestAnimationFrame(function() {
+        if (short.scrollHeight <= short.clientHeight + 4) {
+          var full = det.querySelector('.plot-full');
+          var div = pd.createElement('div');
+          div.className = 'card-logline';
+          div.innerHTML = full ? full.innerHTML : short.innerHTML;
+          if (det.parentNode) det.parentNode.replaceChild(div, det);
+        }
+      });
+    });
+  }
+  var ofObs = new MutationObserver(fixExpanders);
+  ofObs.observe(pd.body, { childList: true, subtree: true });
+  fixExpanders();
 })();
 </script>
 """, height=0)

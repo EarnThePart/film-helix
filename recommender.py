@@ -254,6 +254,13 @@ KEYWORD_NORMALIZATIONS = {
     'mafiaboss': 'mafia', 'chinesemafia': 'mafia',
     'bratva(russianmafia)': 'mafia',
     'gangwarfare': 'gangwar',
+    #surfing
+    'surf': 'surfing', 'surfer': 'surfing', 'surfers': 'surfing',
+    'surfboard': 'surfing', 'surfingcontest': 'surfing', 'femalesurfer': 'surfing',
+    #space travel
+    'spacetravel': 'deepspace', 'outerspace': 'deepspace', 'interstellarspace': 'deepspace',
+    'spaceflights': 'deepspace',
+    'spacecraft': 'spaceship',
     #wealth
     'millionaire': 'wealth', 'billionaire': 'wealth',
     #entertainment industry
