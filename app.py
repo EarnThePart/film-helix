@@ -4,7 +4,7 @@ import streamlit.components.v1 as components
 import requests
 import os
 import wordninja
-from recommender import FilmHelixEngine, normalize_keyword_token
+from recommender import FilmHelixEngine, normalize_keyword_token, MOOD_KEYWORDS
 from huggingface_hub import hf_hub_download
 
 DB_PATH = 'movies.db'
@@ -541,6 +541,9 @@ def _lang_display(code):
     return LANG_NAMES.get(code.lower().strip(), code)
 
 
+_LOWER_WORDS = {'and', 'as', 'vs', 'by', 'of', 'the', 'in', 'on', 'for', 'with',
+                'or', 'del', 'de', 'von', 'van', 'la', 'le', 'di'}
+
 #genre fixes (from wordninja errors)
 _FILM_VOCAB = {
     'giallo': 'Giallo', 'neonoir': 'Neo-noir', 'filmnoir': 'Film Noir',
@@ -660,7 +663,8 @@ def _format_token(w):
 
     if parts and min(len(p) for p in parts) <= 1:
         return w.title()
-    return ' '.join(p.title() for p in parts)
+    return ' '.join(p.lower() if i > 0 and p.lower() in _LOWER_WORDS else p.title()
+                     for i, p in enumerate(parts))
 
 
 def format_bubble_tag(tag):
@@ -675,6 +679,8 @@ def format_bubble_tag(tag):
         'tech / corporate':                  'Tech / Corporate',
         'cold clinical':                     'Cold / Clinical',
         'cold and clinical':                 'Cold / Clinical',
+        'epic operatic':                     'Epic',
+        'epic and grandiose':                'Epic',
         'procedural methodical':             'Procedural / Methodical',
         'ensemble no single lead':           'Ensemble Cast',
         'antisocialpersonalitydisorder':     'Antisocial Personality Disorder',
@@ -691,8 +697,6 @@ def format_bubble_tag(tag):
     tl = tag.lower().strip()
     if tl in _CUSTOM:
         return _CUSTOM[tl]
-    _LOWER_WORDS = {'and', 'as', 'vs', 'by', 'of', 'the', 'in', 'on', 'for', 'with',
-                    'or', 'del', 'de', 'von', 'van', 'la', 'le', 'di'}
     words = tag.replace('_', ' ').split()
     if not words:
         return tag
@@ -778,12 +782,25 @@ _GEO_KEYWORD_TOKENS = {
     'sweden', 'norway', 'denmark', 'finland', 'poland', 'ukraine', 'romania',
     'hungary', 'czechoslovakia', 'yugoslavia', 'austria', 'switzerland', 'belgium',
     'netherlands', 'scotland', 'england', 'wales',
+    'israel', 'palestine', 'georgia', 'philippines', 'afghanistan', 'iceland',
+    'northkorea', 'jamaica', 'bahamas', 'nepal', 'serbia', 'congo', 'taiwan',
+    'algeria', 'bulgaria', 'cambodia', 'syria', 'croatia', 'sudan', 'nicaragua',
+    'panama', 'slovakia', 'uganda', 'costarica', 'libya', 'saudiarabia', 'somalia',
+    'bolivia', 'greenland', 'madagascar', 'mongolia', 'senegal', 'uruguay', 'haiti',
+    'kosovo', 'macedonia', 'monaco', 'srilanka', 'kuwait', 'lithuania', 'malaysia',
+    'malta', 'armenia', 'bhutan', 'bosnia', 'dominicanrepublic', 'estonia',
+    'guatemala', 'kazakhstan', 'laos', 'montenegro', 'slovenia', 'tanzania',
+    'albania', 'angola', 'cameroon', 'ecuador', 'elsalvador', 'guyana', 'honduras',
+    'jordan', 'lebanon', 'liberia', 'mali', 'mauritius', 'namibia', 'rwanda',
+    'zambia', 'azerbaijan', 'belarus', 'botswana', 'cyprus', 'fiji', 'ghana',
+    'lesotho', 'luxembourg', 'mauritania', 'paraguay', 'sierraleone', 'suriname',
+    'tunisia', 'yemen', 'zimbabwe',
     #international cities
     'london', 'paris', 'tokyo', 'seoul', 'beijing', 'shanghai', 'hongkong', 'hong-kong',
     'mumbai', 'delhi', 'rome', 'berlin', 'sydney', 'toronto', 'montreal',
     'moscow', 'istanbul', 'cairo', 'lagos', 'nairobi', 'bangkok', 'singapore',
     'amsterdam', 'vienna', 'prague', 'warsaw', 'budapest', 'dublin', 'lisbon',
-    'barcelona', 'madrid', 'milan', 'naples', 'sicily',
+    'barcelona', 'madrid', 'milan', 'naples', 'sicily', 'mogadishu',
 }
 
 def _is_decade_token(t):
@@ -806,21 +823,21 @@ def _bucket_tags(shared_helix_str, shared_keywords_str, total_helix_raw, thresho
         if t.lower() in _DTDD_TOKENS:
             continue
         label = _keyword_display(t)
-        if t.lower() in ('depressing', 'serene', 'mischievous', 'lighthearted', 'earnest',
-                         'playful', 'satire', 'vibrant', 'sentimental', 'melancholy',
+        if t.lower() in ('depressing', 'depressed', 'serene', 'mischievous', 'lighthearted', 'earnest',
+                         'playful', 'satire', 'scathing', 'foundfootage', 'vibrant', 'sentimental', 'melancholy',
                          'tragic', 'melodramatic', 'somber', 'farcical', 'irreverent',
                          'gentle', 'wry', 'wistful', 'sardonic', 'tearjerker',
-                         'heartfelt', 'melodrama', 'lyrical', 'feelgood', 'darkcomedy'):
-            pairs.append((label, 'tone'))
+                         'heartfelt', 'melodrama', 'lyrical', 'feelgood') or t.lower() in MOOD_KEYWORDS:
+            pairs.append((label, 'tone', False))
             continue
         if t.lower() in HIDDEN_TAGS or label.lower() in HIDDEN_TAGS:
             continue
         if _is_future_decade_token(t):
-            pairs.append(('Future', 'setting'))
+            pairs.append(('Future', 'setting', False))
         elif _is_decade_token(t) or _is_century_token(t) or t.lower() in _GEO_KEYWORD_TOKENS:
-            pairs.append((label, 'setting'))
+            pairs.append((label, 'setting', False))
         else:
-            pairs.append((label, 'story'))
+            pairs.append((label, 'story', False))
 
     if shared_helix_str and total_helix_raw >= threshold:
         for tag in [t.strip() for t in shared_helix_str.split(',') if t.strip()]:
@@ -831,27 +848,28 @@ def _bucket_tags(shared_helix_str, shared_keywords_str, total_helix_raw, thresho
                 continue
             label = format_bubble_tag(_helix_label(tag))
             _is_tone = (tl in _HELIX_TON_TAGS
-                        or tl.startswith(('ton_', 'spl_'))
-                        or (tl.startswith('style_') and 'kinetic' not in tl))
+                        or tl.startswith(('ton_', 'spl_', 'style_')))
             if tl.startswith('dom_'):
-                pairs.append((label, 'setting'))
+                pairs.append((label, 'story', True))
             elif _is_tone:
-                pairs.append((label, 'tone'))
+                pairs.append((label, 'tone', False))
             else:
-                pairs.append((label, 'story'))
+                pairs.append((label, 'story', False))
 
     #dedup across all labels
     seen_dedup = []
     deduped_pairs = []
-    for label, bucket in pairs:
+    for label, bucket, is_dom in pairs:
         pattern = r'\b' + re.escape(label.lower()) + r'\b'
         if not any(re.search(pattern, s.lower()) for s in seen_dedup):
             seen_dedup.append(label)
-            deduped_pairs.append((label, bucket))
+            deduped_pairs.append((label, bucket, is_dom))
 
-    setting    = [l for l, b in deduped_pairs if b == 'setting']
-    tone_style = [l for l, b in deduped_pairs if b == 'tone']
-    story_dna  = [l for l, b in deduped_pairs if b == 'story']
+    setting    = [l for l, b, _ in deduped_pairs if b == 'setting']
+    tone_style = [l for l, b, _ in deduped_pairs if b == 'tone']
+    story_dom  = sorted(l for l, b, is_dom in deduped_pairs if b == 'story' and is_dom)
+    story_rest = sorted(l for l, b, is_dom in deduped_pairs if b == 'story' and not is_dom)
+    story_dna  = story_dom + story_rest
     return setting, tone_style, story_dna
 
 
@@ -1039,7 +1057,7 @@ def render_row(movie, show_warnings):
                     st.markdown(f'<div class="matched-label-section">SETTING</div>{html}', unsafe_allow_html=True)
                 if clean_tone:
                     html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in clean_tone)
-                    st.markdown(f'<div class="matched-label-section">TONE</div>{html}', unsafe_allow_html=True)
+                    st.markdown(f'<div class="matched-label-section">STYLE & TONE</div>{html}', unsafe_allow_html=True)
                 if cast_tags:
                     st.markdown(f'<div class="matched-label-section">SHARED CAST</div>{cast_tags}', unsafe_allow_html=True)
                 if dir_tags:
@@ -1186,9 +1204,9 @@ with st.sidebar:
 
     _PRIORITY_MAP = {
         "Balanced":     "balanced",
-        "Plot / Story": "plot",
+        "Plot & Story": "plot",
         "Genre":        "genre",
-        "Vibe":         "vibe",
+        "Style & Tone": "vibe",
         "Cast":         "cast",
         "Director":     "director",
         "Writer":       "writer",
@@ -1199,7 +1217,7 @@ with st.sidebar:
     _MATCH_FOCUS_DISPLAY = {"Balanced": "Balanced (default)"}
     st.selectbox(
         "match_focus_label",
-        options=["Balanced", "Plot / Story", "Genre", "Vibe", "Cast", "Director", "Writer"],
+        options=["Balanced", "Plot & Story", "Genre", "Style & Tone", "Cast", "Director", "Writer"],
         format_func=lambda x: _MATCH_FOCUS_DISPLAY.get(x, x),
         key="match_priority",
         label_visibility="collapsed",
@@ -1327,9 +1345,9 @@ if search_query:
         #match focus labels
         _PRIORITY_LABELS = {
             "Balanced":     "Balanced Matches",
-            "Plot / Story": "Plot-focused Matches",
+            "Plot & Story": "Plot-focused Matches",
             "Genre":        "Genre-focused Matches",
-            "Vibe":         "Vibe-focused Matches",
+            "Style & Tone": "Style & Tone-focused Matches",
             "Cast":         "Cast-focused Matches",
             "Director":     "Director-focused Matches",
             "Writer":       "Writer-focused Matches",
@@ -1409,41 +1427,42 @@ if search_query:
                 _lbl = format_bubble_tag(_helix_label(_t))
                 _tl = _t.lower()
                 _is_tone = (_tl in _HELIX_TON_TAGS
-                            or _tl.startswith(('ton_', 'spl_'))
-                            or (_tl.startswith('style_') and 'kinetic' not in _tl))
+                            or _tl.startswith(('ton_', 'spl_', 'style_')))
                 if _tl.startswith('dom_'):
-                    _src_all_labels.append((_lbl, 'setting'))
+                    _src_all_labels.append((_lbl, 'story', True))
                 elif _is_tone:
-                    _src_all_labels.append((_lbl, 'tone'))
+                    _src_all_labels.append((_lbl, 'tone', False))
                 else:
-                    _src_all_labels.append((_lbl, 'story'))
+                    _src_all_labels.append((_lbl, 'story', False))
             for _kw_t in _src_kw_tokens:
                 _kw_lbl = _keyword_display(_kw_t)
-                if _kw_t.lower() in ('depressing', 'serene', 'mischievous', 'lighthearted', 'earnest',
-                                      'playful', 'satire', 'vibrant', 'sentimental', 'melancholy',
+                if _kw_t.lower() in ('depressing', 'depressed', 'serene', 'mischievous', 'lighthearted', 'earnest',
+                                      'playful', 'satire', 'scathing', 'foundfootage', 'vibrant', 'sentimental', 'melancholy',
                                       'tragic', 'melodramatic', 'somber', 'farcical', 'irreverent',
                                       'gentle', 'wry', 'wistful', 'sardonic', 'tearjerker',
-                                      'heartfelt', 'melodrama', 'lyrical', 'feelgood', 'darkcomedy'):
-                    _src_all_labels.append((_kw_lbl, 'tone'))
+                                      'heartfelt', 'melodrama', 'lyrical', 'feelgood') or _kw_t.lower() in MOOD_KEYWORDS:
+                    _src_all_labels.append((_kw_lbl, 'tone', False))
                 elif _is_future_decade_token(_kw_t):
-                    _src_all_labels.append(('Future', 'setting'))
+                    _src_all_labels.append(('Future', 'setting', False))
                 elif _is_decade_token(_kw_t) or _is_century_token(_kw_t) or _kw_t.lower() in _GEO_KEYWORD_TOKENS:
-                    _src_all_labels.append((_kw_lbl, 'setting'))
+                    _src_all_labels.append((_kw_lbl, 'setting', False))
                 else:
-                    _src_all_labels.append((_kw_lbl, 'story'))
+                    _src_all_labels.append((_kw_lbl, 'story', False))
 
             #deduplicate tags
             _seen_src = []
             _deduped_src = []
-            for _lbl, _bkt in _src_all_labels:
+            for _lbl, _bkt, _is_dom in _src_all_labels:
                 _pat = r'\b' + re.escape(_lbl.lower()) + r'\b'
                 if not any(re.search(_pat, s.lower()) for s in _seen_src):
                     _seen_src.append(_lbl)
-                    _deduped_src.append((_lbl, _bkt))
+                    _deduped_src.append((_lbl, _bkt, _is_dom))
 
-            _src_setting = [l for l, b in _deduped_src if b == 'setting']
-            _src_tone    = [l for l, b in _deduped_src if b == 'tone']
-            _src_story   = [l for l, b in _deduped_src if b == 'story']
+            _src_setting   = [l for l, b, _ in _deduped_src if b == 'setting']
+            _src_tone      = [l for l, b, _ in _deduped_src if b == 'tone']
+            _src_story_dom = sorted(l for l, b, _d in _deduped_src if b == 'story' and _d)
+            _src_story_rest = sorted(l for l, b, _d in _deduped_src if b == 'story' and not _d)
+            _src_story     = _src_story_dom + _src_story_rest
 
         _hero_poster_col, _hero_meta_col = st.columns([1, 3])
         with _hero_poster_col:
@@ -1521,7 +1540,7 @@ if search_query:
                     st.markdown(f'<div class="matched-label-section">SETTING</div>{html}', unsafe_allow_html=True)
                 if _src_tone:
                     html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _src_tone)
-                    st.markdown(f'<div class="matched-label-section">TONE</div>{html}', unsafe_allow_html=True)
+                    st.markdown(f'<div class="matched-label-section">STYLE & TONE</div>{html}', unsafe_allow_html=True)
             with _hero_right_col:
                 if _src_story:
                     _story_visible = _src_story[:8]
