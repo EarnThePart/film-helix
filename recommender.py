@@ -217,6 +217,30 @@ KEYWORD_NORMALIZATIONS = {
     '11thcentury': 'medieval', '12thcentury': 'medieval', '13thcentury': 'medieval',
     '14thcentury': 'medieval', '15thcentury': 'medieval', 'middleages': 'medieval',
     'medieval': 'medieval',
+    #law enforcement / investigators
+    'fbiagent': 'fbi', 'fbiofficer': 'fbi',
+    'privatedetective': 'detective', 'policedetective': 'detective',
+    'homicidedetective': 'detective', 'amateurdetective': 'detective',
+    'privateinvestigator': 'detective',
+    'undercoveragent': 'secretagent', 'governmentagent': 'secretagent',
+    'dirtycop': 'crookedcop',
+    #killers / hired violence
+    'contractkiller': 'hitman', 'hiredkiller': 'hitman',
+    'femaleassassin': 'assassin',
+    'psychokiller': 'psychopath',
+    #mafia / organised crime
+    'mafiaboss': 'mafia', 'chinesemafia': 'mafia',
+    'bratva(russianmafia)': 'mafia',
+    'gangwarfare': 'gangwar',
+    #wealth
+    'millionaire': 'wealth', 'billionaire': 'wealth',
+    #entertainment industry
+    'hollywood': 'moviebusiness', 'moviestudio': 'moviebusiness',
+    'movie_studio': 'moviebusiness', 'filmstudio': 'moviebusiness',
+    'showbusiness': 'moviebusiness', 'oldhollywood': 'moviebusiness',
+    'blaxploitationcinema': 'blaxploitation',
+    'filmdirector': 'director',
+    'musicbusiness': 'musicindustry',
     'rich': 'wealth', 'wealthy': 'wealth',
     'poor': 'poverty',
     'terroristgroup': 'terrorism', 'terroristplot': 'terrorism',
