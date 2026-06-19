@@ -221,6 +221,12 @@ details.plot-expander[open] .plot-short       { display: none; }
 details.plot-expander[open] .show-more-label  { display: none; }
 details.plot-expander[open] .plot-full        { display: block; }
 details.plot-expander[open] .show-less-label  { display: block; color: #94a3b8; margin-top: 2px; }
+details.plot-expander.no-overflow { pointer-events: none; }
+details.plot-expander.no-overflow .show-more-label,
+details.plot-expander.no-overflow .show-less-label { display: none !important; }
+details.plot-expander.no-overflow .plot-short {
+    display: block; overflow: visible; -webkit-line-clamp: unset; }
+details.plot-expander.no-overflow .plot-full { display: none; }
 
 details.dna-overflow { display: block; }
 details.dna-overflow summary { list-style: none; cursor: pointer; display: block; margin-top: 4px; }
@@ -586,6 +592,10 @@ _FILM_VOCAB = {
     'washingtondc': 'Washington D.C.', 'lasvegas': 'Las Vegas',
     'moviebusiness': 'Movie Business',
     'musicindustry': 'Music Industry',
+    'journalismandmedia': 'Journalism and Media',
+    'coupdetat': "Coup D'\u00c9tat",
+    'uprising': 'Uprising',
+    'stockbroker': 'Stockbroker',
     'secretagent': 'Secret Agent',
     'hitman': 'Hitman',
     'gangwar': 'Gang War',
@@ -727,8 +737,8 @@ def format_bubble_tag(tag):
         'supernatural / occult':             'Supernatural / Occult',
         'tech corporate':                    'Tech / Corporate',
         'tech / corporate':                  'Tech / Corporate',
-        'cold clinical':                     'Cold / Clinical',
-        'cold and clinical':                 'Cold / Clinical',
+        'cold clinical':                     'Cold and Clinical',
+        'cold and clinical':                 'Cold and Clinical',
         'epic operatic':                     'Epic',
         'epic and grandiose':                'Epic',
         'procedural methodical':             'Procedural / Methodical',
@@ -736,6 +746,7 @@ def format_bubble_tag(tag):
         'antisocialpersonalitydisorder':     'Antisocial Personality Disorder',
         'antisocial personality disorder':   'Antisocial Personality Disorder',
         'central intelligence agency':       'CIA',
+        'journalism media':                  'Journalism and Media',
         'wilderness frontier':               'Wilderness / Frontier',
         'dying and death':                   'Dying / Death',
         'dying death':                       'Dying / Death',
@@ -1021,7 +1032,7 @@ def render_row(movie, show_warnings):
             st.markdown(
                 f'<div class="poster-wrap">'
                 f'<img src="{poster}" alt="{movie["title"]}" '
-                f'onerror="this.style.display=\'none\';this.nextSibling.style.display=\'flex\'">'
+                f'onerror="this.style.display=\'none\';this.parentNode.querySelector(\'.poster-placeholder\').style.display=\'flex\'">'
                 f'<span class="poster-placeholder" style="display:none">🧬</span>'
                 f'</div>',
                 unsafe_allow_html=True
@@ -1502,6 +1513,8 @@ if search_query:
                 else:
                     _src_all_labels.append((_lbl, 'story', False))
             for _kw_t in _src_kw_tokens:
+                if _kw_t.lower() in HIDDEN_TAGS:
+                    continue
                 _kw_lbl = _keyword_display(_kw_t)
                 if _kw_t.lower() in ('depressing', 'depressed', 'serene', 'mischievous', 'lighthearted', 'earnest',
                                       'playful', 'satire', 'scathing', 'foundfootage', 'vibrant', 'sentimental', 'melancholy',
@@ -1537,7 +1550,7 @@ if search_query:
                 st.markdown(
                     f'<div class="poster-wrap">'
                     f'<img src="{_src_poster_url}" alt="{_src_title_str}" '
-                    f'onerror="this.style.display=\'none\';this.nextSibling.style.display=\'flex\'">'
+                    f'onerror="this.style.display=\'none\';this.parentNode.querySelector(\'.poster-placeholder\').style.display=\'flex\'">'
                     f'<span class="poster-placeholder" style="display:none">🧬</span>'
                     f'</div>',
                     unsafe_allow_html=True
@@ -1591,24 +1604,14 @@ if search_query:
                 _render_logline(_src_overview, '_hero_' + _src_title_str[:20])
 
             #DNA tags
-            _hero_left_col, _hero_right_col = st.columns(2)
-
-            def _src_tag_row_in(col, label, tags):
-                with col:
-                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in tags)
-                    st.markdown(
-                        f'<div style="margin-bottom:4px"><span class="matched-label">{label}</span>{html}</div>',
-                        unsafe_allow_html=True
-                    )
+            _hero_has_right = any([_src_setting, _src_tone])
+            if _hero_has_right:
+                _hero_left_col, _hero_right_col = st.columns(2)
+            else:
+                _hero_left_col = st.container()
+                _hero_right_col = None
 
             with _hero_left_col:
-                if _src_setting:
-                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _src_setting)
-                    st.markdown(f'<div class="matched-label-section">SETTING</div>{html}', unsafe_allow_html=True)
-                if _src_tone:
-                    html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _src_tone)
-                    st.markdown(f'<div class="matched-label-section">STYLE & TONE</div>{html}', unsafe_allow_html=True)
-            with _hero_right_col:
                 if _src_story:
                     _story_visible = _src_story[:8]
                     _story_overflow = _src_story[8:]
@@ -1629,6 +1632,15 @@ if search_query:
                         )
                     else:
                         st.markdown(f'<div style="margin-bottom:4px"><div class="matched-label-section">STORY DNA</div>{html_vis}</div>', unsafe_allow_html=True)
+
+            if _hero_right_col is not None:
+                with _hero_right_col:
+                    if _src_setting:
+                        html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _src_setting)
+                        st.markdown(f'<div class="matched-label-section">SETTING</div>{html}', unsafe_allow_html=True)
+                    if _src_tone:
+                        html = ''.join(f'<span class="keyword-tag">{t}</span>' for t in _src_tone)
+                        st.markdown(f'<div class="matched-label-section">STYLE & TONE</div>{html}', unsafe_allow_html=True)
 
             #source film content warnings
             if show_warnings and not _src_matches.empty:
@@ -1749,11 +1761,8 @@ if search_query:
       if (!short) return;
       requestAnimationFrame(function() {
         if (short.scrollHeight <= short.clientHeight + 4) {
-          var full = det.querySelector('.plot-full');
-          var div = pd.createElement('div');
-          div.className = 'card-logline';
-          div.innerHTML = full ? full.innerHTML : short.innerHTML;
-          if (det.parentNode) det.parentNode.replaceChild(div, det);
+          det.classList.add('no-overflow');
+          det.removeAttribute('open');
         }
       });
     });
