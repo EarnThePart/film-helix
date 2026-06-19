@@ -76,6 +76,15 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(movies)").fetchall()}
+    if "validated_at" not in existing:
+        conn.execute("ALTER TABLE movies ADD COLUMN validated_at TEXT")
+        conn.commit()
+    conn.execute("""
+        UPDATE movies SET validated_at='2000-01-01'
+        WHERE is_valid=1 AND validated_at IS NULL
+    """)
+    conn.commit()
     return conn
 
 
@@ -116,10 +125,58 @@ def _genres_str(data):
     return " ".join(g["name"] for g in data.get("genres", []))
 
 
+_VALID_DATE_RE = re.compile(r'^(19|20|21)\d{2}-\d{2}-\d{2}$')
+
+
+def _dedup_valid_films(conn, dry_run):
+    import re as _re
+    _ISO = _re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+    def _date_score(rd):
+        if not rd or not str(rd).strip():
+            return 0
+        return 2 if _ISO.match(str(rd).strip()) else 1
+
+    def _completeness(row):
+        return sum(1 for v in row if v is not None and str(v).strip() not in ('', 'nan', 'None'))
+
+    rows = conn.execute("SELECT rowid, * FROM movies WHERE is_valid=1 AND id IS NOT NULL").fetchall()
+
+    bad_date_rowids = []
+    groups = {}
+    for row in rows:
+        rd = str(row["release_date"] or "").strip()
+        if not _VALID_DATE_RE.match(rd):
+            bad_date_rowids.append(row["rowid"])
+            log.warning(f"  [DEDUP] bad date rowid={row['rowid']} id={row['id']} "
+                        f"'{row['title']}' release_date={rd!r} — demoting")
+        else:
+            groups.setdefault(row["id"], []).append(row)
+
+    to_demote = list(bad_date_rowids)
+    for tmdb_id, group in groups.items():
+        if len(group) < 2:
+            continue
+        ordered = sorted(group, key=lambda r: (-_date_score(r["release_date"]), -_completeness(r), r["rowid"]))
+        for row in ordered[1:]:
+            to_demote.append(row["rowid"])
+            log.warning(f"  [DEDUP] duplicate rowid={row['rowid']} id={tmdb_id} '{row['title']}' "
+                        f"(keeping rowid={ordered[0]['rowid']})")
+
+    if to_demote:
+        log.info(f"  [DEDUP] demoting {len(to_demote)} rows ({len(bad_date_rowids)} bad-date, "
+                 f"{len(to_demote)-len(bad_date_rowids)} duplicates)")
+        if not dry_run:
+            conn.executemany("UPDATE movies SET is_valid=0 WHERE rowid=?", [(r,) for r in to_demote])
+            conn.commit()
+    else:
+        log.info("  [DEDUP] no bad-date or duplicate rows found")
+
+
 def run_tmdb_enrichment(conn, dry_run):
     log.info("PHASE 1: TMDB enrichment")
     rows = conn.execute("""
-        SELECT id, title, release_date, vote_count, dna_keywords, dna_genres
+        SELECT id, title, release_date, vote_count, dna_keywords, dna_genres, runtime
         FROM movies
         WHERE (release_date LIKE '2024%' OR release_date LIKE '2025%' OR release_date LIKE '2026%') AND CAST(vote_count AS REAL) >= 1000
            OR (
@@ -155,21 +212,28 @@ def run_tmdb_enrichment(conn, dry_run):
             new_gen  = _genres_str(data)
             new_vc   = float(data.get("vote_count") or 0)
             new_va   = float(data.get("vote_average") or 0)
+            raw_rt   = data.get("runtime")
+            if raw_rt is not None:
+                if raw_rt <= 1 or raw_rt > 600:
+                    log.warning(f"  [RUNTIME] Rejected bad runtime {raw_rt} for '{row['title']}'")
+                    raw_rt = None
+            new_rt = raw_rt
 
             changed = (
                 new_kw  != (row["dna_keywords"] or "") or
                 new_gen != (row["dna_genres"]   or "") or
-                abs(new_vc - float(row["vote_count"] or 0)) > 1
+                abs(new_vc - float(row["vote_count"] or 0)) > 1 or
+                (new_rt is not None and new_rt != row["runtime"])
             )
             if changed:
                 if not dry_run:
                     conn.execute("""
                         UPDATE movies
-                        SET dna_keywords=?, dna_genres=?, vote_count=?, vote_average=?
+                        SET dna_keywords=?, dna_genres=?, vote_count=?, vote_average=?, runtime=?
                         WHERE id=?
                     """, (new_kw or row["dna_keywords"],
                           new_gen or row["dna_genres"],
-                          new_vc, new_va, tmdb_id))
+                          new_vc, new_va, new_rt, tmdb_id))
                 updated += 1
 
         if not dry_run:
@@ -437,19 +501,34 @@ def _fetch_wiki_plot(title, year, tconst=None):
     return None
 
 
-def run_wiki_plots(conn, dry_run, min_votes=None):
+def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
     import csv
     log.info("PHASE 3: Wikipedia plots")
     threshold = min_votes if min_votes is not None else VOTE_THRESHOLD
-    rows = conn.execute("""
-        SELECT id, title, release_date, tconst_y, vote_count
-        FROM movies
-        WHERE wiki_plot IS NULL
-          AND CAST(vote_count AS REAL) >= ?
-          AND is_valid = 1
-        ORDER BY CAST(vote_count AS REAL) DESC
-    """, (threshold,)).fetchall()
-    log.info(f"  {len(rows)} films missing wiki plots (min_votes={threshold:,})")
+    if since_cutoff is not None:
+        rows = conn.execute("""
+            SELECT id, title, release_date, tconst_y, vote_count
+            FROM movies
+            WHERE wiki_plot IS NULL
+              AND is_valid = 1
+              AND validated_at IS NOT NULL
+              AND validated_at >= ?
+            ORDER BY CAST(vote_count AS REAL) DESC
+        """, (since_cutoff,)).fetchall()
+        log.info(f"  {len(rows)} newly-promoted films missing wiki plots (validated_at >= {since_cutoff[:10]})")
+        if not rows:
+            log.info("  0 newly promoted films need wiki plots — skipping")
+            return 0
+    else:
+        rows = conn.execute("""
+            SELECT id, title, release_date, tconst_y, vote_count
+            FROM movies
+            WHERE wiki_plot IS NULL
+              AND CAST(vote_count AS REAL) >= ?
+              AND is_valid = 1
+            ORDER BY CAST(vote_count AS REAL) DESC
+        """, (threshold,)).fetchall()
+        log.info(f"  {len(rows)} films missing wiki plots (min_votes={threshold:,})")
 
     failures_path = "wiki_fetch_failures.csv"
     failure_rows = []
@@ -559,17 +638,33 @@ def _fetch_rt_scrape(row):
     return (row["id"], None)
 
 
-def run_posters_scores(conn, dry_run):
+def run_posters_scores(conn, dry_run, since_cutoff=None):
     log.info("PHASE 4: Posters & RT scores")
-
-    poster_rows = conn.execute(
-        "SELECT id FROM movies WHERE poster IS NULL AND is_valid=1 ORDER BY vote_count DESC"
-    ).fetchall()
-    rt_rows = conn.execute(
-        "SELECT id, tconst_y FROM movies WHERE rt_score IS NULL AND is_valid=1 AND tconst_y IS NOT NULL ORDER BY vote_count DESC"
-    ).fetchall()
-
-    log.info(f"  {len(poster_rows)} posters missing, {len(rt_rows)} RT scores missing")
+    if since_cutoff is not None:
+        poster_rows = conn.execute("""
+            SELECT id FROM movies
+            WHERE poster IS NULL AND is_valid=1
+              AND validated_at IS NOT NULL AND validated_at >= ?
+            ORDER BY vote_count DESC
+        """, (since_cutoff,)).fetchall()
+        rt_rows = conn.execute("""
+            SELECT id, tconst_y FROM movies
+            WHERE rt_score IS NULL AND is_valid=1 AND tconst_y IS NOT NULL
+              AND validated_at IS NOT NULL AND validated_at >= ?
+            ORDER BY vote_count DESC
+        """, (since_cutoff,)).fetchall()
+        log.info(f"  {len(poster_rows)} posters missing, {len(rt_rows)} RT scores missing (validated_at >= {since_cutoff[:10]})")
+        if not poster_rows and not rt_rows:
+            log.info("  0 newly promoted films need posters or RT scores — skipping")
+            return 0, 0
+    else:
+        poster_rows = conn.execute(
+            "SELECT id FROM movies WHERE poster IS NULL AND is_valid=1 ORDER BY vote_count DESC"
+        ).fetchall()
+        rt_rows = conn.execute(
+            "SELECT id, tconst_y FROM movies WHERE rt_score IS NULL AND is_valid=1 AND tconst_y IS NOT NULL ORDER BY vote_count DESC"
+        ).fetchall()
+        log.info(f"  {len(poster_rows)} posters missing, {len(rt_rows)} RT scores missing")
 
     posters_fetched = 0
     chunks = [poster_rows[i:i+TMDB_CHUNK] for i in range(0, len(poster_rows), TMDB_CHUNK)]
@@ -594,13 +689,24 @@ def run_posters_scores(conn, dry_run):
     if not dry_run:
         conn.commit()
 
-    #RT scrape fallback for films not in OMDb
-    rt_scrape_rows = conn.execute(
-        """SELECT id, title, release_date FROM movies
-           WHERE is_valid=1 AND (rt_score IS NULL OR rt_score=0)
-           ORDER BY vote_count DESC"""
-    ).fetchall()
-    log.info(f"  RT scrape fallback: {len(rt_scrape_rows)} films still missing scores")
+    if since_cutoff is not None:
+        rt_scrape_rows = conn.execute("""
+            SELECT id, title, release_date FROM movies
+            WHERE is_valid=1 AND (rt_score IS NULL OR rt_score=0)
+              AND validated_at IS NOT NULL AND validated_at >= ?
+            ORDER BY vote_count DESC
+        """, (since_cutoff,)).fetchall()
+    else:
+        rt_scrape_rows = conn.execute(
+            """SELECT id, title, release_date FROM movies
+               WHERE is_valid=1 AND (rt_score IS NULL OR rt_score=0)
+               ORDER BY vote_count DESC"""
+        ).fetchall()
+
+    if not rt_scrape_rows:
+        log.info("  0 newly promoted films need RT scores — skipping scrape fallback")
+    else:
+        log.info(f"  RT scrape fallback: {len(rt_scrape_rows)} films still missing scores")
     rt_scraped = 0
     for row in rt_scrape_rows:
         film_id, score = _fetch_rt_scrape(row)
@@ -909,6 +1015,7 @@ def main():
     ap.add_argument("--skip-posters", action="store_true", help="Skip poster/RT fetch")
     ap.add_argument("--skip-cache",    action="store_true", help="Skip cache rebuild")
     ap.add_argument("--force-rebuild",  action="store_true", help="Force cache rebuild even if no content changes detected")
+    ap.add_argument("--since",          type=str, default=None, help="Limit Phase 3/4 to films promoted to is_valid=1 on or after DATE (YYYY-MM-DD)")
     ap.add_argument("--verify-plots",    action="store_true", help="Verify stored wiki_plots against fresh Wikipedia fetch")
     ap.add_argument("--fix-mismatches", action="store_true", help="When used with --verify-plots, re-fetch and overwrite mismatched plots in the DB")
     ap.add_argument("--min-votes",       type=int, default=200000, help="Min vote_count for --verify-plots and wiki fetch phase (default: 200000)")
@@ -958,6 +1065,8 @@ def main():
 
     conn = get_conn()
 
+    _dedup_valid_films(conn, args.dry_run)
+
     content_changed = False
 
     #TMDB
@@ -981,21 +1090,38 @@ def main():
     #valid film check
     new_valid = 0
     if not args.dry_run and (tmdb_updated > 0 or imdb_updated > 0):
-        new_valid = conn.execute("""
+        _date_filter = """
+              AND (release_date LIKE '19__-__-__'
+                OR release_date LIKE '20__-__-__'
+                OR release_date LIKE '21__-__-__')
+        """
+        new_valid = conn.execute(f"""
             SELECT COUNT(*) FROM movies
             WHERE is_valid = 0
               AND CAST(vote_count AS REAL) >= ?
+              {_date_filter}
         """, (VOTE_THRESHOLD,)).fetchone()[0]
         if new_valid > 0:
-            conn.execute(f"UPDATE movies SET is_valid=1 WHERE is_valid=0 AND CAST(vote_count AS REAL) >= {VOTE_THRESHOLD}")
+            conn.execute(f"""
+                UPDATE movies SET is_valid=1, validated_at=?
+                WHERE is_valid=0
+                  AND CAST(vote_count AS REAL) >= {VOTE_THRESHOLD}
+                  {_date_filter}
+            """, (datetime.now(timezone.utc).isoformat(),))
             conn.commit()
             log.info(f"  Promoted {new_valid} films to is_valid=1")
             content_changed = True
 
+    _since_cutoff = args.since if args.since else None
+
     #wikipedia
     wiki_fetched = 0
     if not args.skip_wiki:
-        wiki_fetched = run_wiki_plots(conn, args.dry_run, min_votes=args.min_votes if args.min_votes != 200000 else None)
+        wiki_fetched = run_wiki_plots(
+            conn, args.dry_run,
+            min_votes=args.min_votes if args.min_votes != 200000 else None,
+            since_cutoff=_since_cutoff,
+        )
         if wiki_fetched > 0:
             content_changed = True
     else:
@@ -1004,7 +1130,7 @@ def main():
     #posters/scores
     posters_fetched, rt_fetched = 0, 0
     if not args.skip_posters:
-        posters_fetched, rt_fetched = run_posters_scores(conn, args.dry_run)
+        posters_fetched, rt_fetched = run_posters_scores(conn, args.dry_run, since_cutoff=_since_cutoff)
     else:
         log.info("PHASE 4: Posters & RT scores skipped.")
 

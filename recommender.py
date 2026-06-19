@@ -25,7 +25,8 @@ META_KEYWORD_STOPWORDS = {
     'gatekeeper', 'slime', 'receptionist', 'worldtradecenter', 'enchant', 'amused',
     'bmovie', 'relationship', 'friends', 'family', 'death', 'evil', 'hero',
     'escape', 'fight', 'gun', 'money', 'travel', 'father', 'mother', 'sister',
-    'brother', 'daughter', 'fear', 'admiring', 'dramatic',
+    'brother', 'daughter', 'fear', 'admiring', 'adoring', 'casual', 'arrogant', 'dramatic',
+    'blackpeople', 'van',
     'hilarious', 'intense', 'playful', 'cautionary', 'awestruck', 'antagonistic',
     'bold', 'anxious', 'whimsical', 'tense', 'hopeful', 'cheerful', 'angry',
     'audacious', 'romantic', 'inspirational', 'shocking', 'nostalgic',
@@ -106,7 +107,8 @@ KEYWORD_NORMALIZATIONS = {
     #legal
     'court': 'courtroom', 'trial': 'courtroom', 'court_case': 'courtroom',
     #media
-    'journalist': 'journalism', 'reporter': 'journalism', 'newspaperman': 'journalism',
+    'journalist': 'journalismandmedia', 'reporter': 'journalismandmedia',
+    'newspaperman': 'journalismandmedia', 'journalism': 'journalismandmedia',
     #crime/violence
     'murderer': 'murder', 'murders': 'murder', 'killing': 'murder',
     'serial': 'serialkiller', 'psychopathic': 'psychopath', 'theft': 'robbery',
@@ -253,6 +255,10 @@ KEYWORD_NORMALIZATIONS = {
     #mafia / organised crime
     'mafiaboss': 'mafia', 'chinesemafia': 'mafia',
     'bratva(russianmafia)': 'mafia',
+    'broker': 'stockbroker',
+    'plannedcoup': 'coupdetat', 'militarycoup': 'coupdetat',
+    'insurrection': 'uprising',
+    'sedition': 'treason',
     'gangwarfare': 'gangwar',
     #surfing
     'surf': 'surfing', 'surfer': 'surfing', 'surfers': 'surfing',
