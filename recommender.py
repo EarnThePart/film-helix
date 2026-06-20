@@ -26,7 +26,7 @@ META_KEYWORD_STOPWORDS = {
     'bmovie', 'relationship', 'friends', 'family', 'death', 'evil', 'hero',
     'escape', 'fight', 'gun', 'money', 'travel', 'father', 'mother', 'sister',
     'brother', 'daughter', 'fear', 'admiring', 'adoring', 'casual', 'arrogant', 'dramatic',
-    'blackpeople', 'van',
+    'blackpeople', 'van', 'fword',
     'hilarious', 'intense', 'playful', 'cautionary', 'awestruck', 'antagonistic',
     'bold', 'anxious', 'whimsical', 'tense', 'hopeful', 'cheerful', 'angry',
     'audacious', 'romantic', 'inspirational', 'shocking', 'nostalgic',
@@ -260,6 +260,10 @@ KEYWORD_NORMALIZATIONS = {
     'insurrection': 'uprising',
     'sedition': 'treason',
     'gangwarfare': 'gangwar',
+    #drug normalizations — collapse consumption variants into 'drugs'; crime-side stays separate
+    'drug': 'drugs', 'drugabuse': 'drugs', 'substanceabuse': 'drugs',
+    'illegaldrugs': 'drugs', 'drugusage': 'drugs', 'drugscene': 'drugs',
+    'drugaddict': 'drugaddiction',
     #surfing
     'surf': 'surfing', 'surfer': 'surfing', 'surfers': 'surfing',
     'surfboard': 'surfing', 'surfingcontest': 'surfing', 'femalesurfer': 'surfing',
@@ -309,6 +313,16 @@ KEYWORD_NORMALIZATIONS = {
     'grandfathergrandsonrelationship': 'grandparentgrandchildrelationship',
     'grandmothergranddaughterrelationship': 'grandparentgrandchildrelationship',
     'grandmothergrandsonrelationship': 'grandparentgrandchildrelationship',
+    'cuckoldedhusband': 'cuckold',
+    'cuckholdedhusband': 'cuckold',
+    'cuckolded': 'cuckold',
+    'murderspree': 'killingspree',
+    'ss': 'nazi',
+    'exhilarated': 'exhilarating',
+    'indianausa': 'indiana',
+    'petrol': 'oil',
+    'unsociability': 'antisocial',
+    'centralandsouthamerica': 'southamerica',
 }
 
 

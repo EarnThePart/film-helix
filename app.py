@@ -504,6 +504,7 @@ if 'exclude_sequels' not in st.session_state:      st.session_state.exclude_sequ
 if 'sensitive_toggle' not in st.session_state:     st.session_state.sensitive_toggle = False
 if 'show_warnings_toggle' not in st.session_state: st.session_state.show_warnings_toggle = False
 if 'sort_order' not in st.session_state:           st.session_state.sort_order = "Match Percentage"
+if 'selected_film' not in st.session_state:        st.session_state.selected_film = None
 #content warnings default to false on first load
 for _wg in WARNING_GROUPS:
     if f'warn_{_wg}' not in st.session_state:
@@ -596,6 +597,8 @@ _FILM_VOCAB = {
     'coupdetat': "Coup D'\u00c9tat",
     'uprising': 'Uprising',
     'stockbroker': 'Stockbroker',
+    'drugaddiction': 'Drug Addiction',
+    'drugged': 'Drugged',
     'secretagent': 'Secret Agent',
     'hitman': 'Hitman',
     'gangwar': 'Gang War',
@@ -715,8 +718,8 @@ def _format_token(w):
     if re.match(r'^\d{2,4}[a-z]+$', wl):
         return wl
     camel = re.sub(r'([a-zà-ÿ])([A-Z])', r'\1 \2', w)
-    #add space after initials: "F.Murray" → "F. Murray", "G.P.Cosmatos" → "G. P. Cosmatos"
-    camel = re.sub(r'([A-Za-z]\.)([A-Za-z])', r'\1 \2', camel)
+    #add space after initials: "J.K.Simmons" → "J. K. Simmons" (lookbehind is zero-width so overlapping matches like K.S are caught)
+    camel = re.sub(r'(?<=[A-Za-z]\.)([A-Za-z])', r' \1', camel)
     if camel != w:
         return _fix_name_prefixes(camel)
     parts = wordninja.split(wl)
@@ -754,6 +757,11 @@ def format_bubble_tag(tag):
         'suspicionofmurder':                 'Suspicion of Murder',
         'loss of loved one':                 'Loss of Loved One',
         'loss_of_loved_one':                 'Loss of Loved One',
+        'basedontvseriesortvseries':          'Based on TV Series',
+        'basedontvseriesortvshow':            'Based on TV Series',
+        'basedontvseries':                    'Based on TV Series',
+        'based on tv series or tv series':    'Based on TV Series',
+        'based on tv series':                 'Based on TV Series',
     }
     tl = tag.lower().strip()
     if tl in _CUSTOM:
@@ -799,6 +807,21 @@ HIDDEN_TAGS = {
     'plot_twist', 'plot twist', 'plottwist',
     'rape', 'sexual assault', 'sexual_assault',
     'depressing',
+    # suicide — spoiler / sensitive content (matching still works)
+    'suicide', 'suicideattempt', 'suicidethoughts', 'teensuicide', 'childsuicide',
+    'suicidebyhanging', 'suicidebygun', 'suicidebygas', 'suicidebycop',
+    'suicidejumping', 'suicidepact', 'suicidenote', 'suicideletter', 'suicidehotline',
+    'suicideinvestigation', 'suicideoffather', 'suicideofmother', 'suicideofhusband',
+    'masssuicide', 'multiplesuicide', 'assistedsuicide', 'fakesuicide',
+    'driventosuicide', 'contemplatingsuicide', 'murderframedassuicide', 'murder-suicide',
+    'suicidemission', 'suicidebomber',
+    # self-harm — sensitive content
+    'self-harm', 'selfharm', 'self_harm', 'selfinflictedinjury', 'self-inflictedinjury',
+    # drug use/abuse — content warning toggle covers this; 'drugs' shows instead
+    'druguse', 'drugabuse', 'substanceabuse',
+    # animal harm — spoiler / upsetting
+    'animalharm', 'animal-harm', 'animal_harm', 'animalcruelty', 'animalkilling',
+    'animalabuse', 'animaldeath', 'animaltorture',
     'based on book', 'based_on_book', 'basedonbook',
     'anime', 'fantasy', 'adventure',
     'heist thriller', 'heistthriller',
@@ -841,7 +864,7 @@ _GEO_KEYWORD_TOKENS = {
     'sanfrancisco', 'texas', 'california', 'newjersey', 'washington', 'washingtondc',
     'miami', 'lasvegas', 'neworleans', 'philadelphia', 'detroit', 'seattle',
     'atlanta', 'dallas', 'houston', 'hawaii', 'alaska', 'florida', 'baltimore',
-    'longisland', 'usa',
+    'longisland', 'usa', 'indiana', 'centralamerica', 'southamerica',
     #countries
     'cuba', 'ireland', 'france', 'germany', 'italy', 'japan', 'korea', 'southkorea',
     'china', 'india', 'russia', 'mexico', 'spain', 'brazil', 'morocco', 'egypt',
@@ -1270,15 +1293,52 @@ with st.sidebar:
             color: #0e172a !important;
         }
     </style>""", unsafe_allow_html=True)
+    def _on_film_select():
+        if st.session_state.search_box:
+            st.session_state.selected_film = st.session_state.search_box
+        st.session_state.search_box = None
+
     st.markdown("**SEARCH FOR A FILM:**")
-    search_query = st.selectbox(
+    st.selectbox(
         "select_film_label",
         options=_ordered_titles,
         index=None,
         placeholder="Select a film to match",
         key="search_box",
         label_visibility="collapsed",
+        on_change=_on_film_select,
     )
+    search_query = st.session_state.selected_film
+
+    # Backspace in the film search box clears all typed text at once so the
+    # user never has to hold backspace to reset — one keypress = blank input.
+    components.html("""
+<script>
+(function () {
+  var pd = window.parent.document;
+  function attach() {
+    pd.querySelectorAll('input[role="combobox"]').forEach(function (inp) {
+      if (inp._bsClearAttached) return;
+      // Only target the film search box (identified by its placeholder)
+      if (!inp.placeholder || inp.placeholder.indexOf('film') === -1) return;
+      inp._bsClearAttached = true;
+      inp.addEventListener('keydown', function (e) {
+        if (e.key === 'Backspace' && inp.value.length > 0) {
+          e.preventDefault();
+          var setter = Object.getOwnPropertyDescriptor(
+            window.parent.HTMLInputElement.prototype, 'value'
+          ).set;
+          setter.call(inp, '');
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      });
+    });
+  }
+  attach();
+  new MutationObserver(attach).observe(pd.body, { childList: true, subtree: true });
+})();
+</script>
+""", height=0)
 
     _PRIORITY_MAP = {
         "Balanced":     "balanced",
@@ -1432,6 +1492,17 @@ if search_query:
         }
         priority_display = _PRIORITY_LABELS.get(selected_label or "Balanced", f"{selected_label} Matches")
 
+        #collect every bubble label rendered across all result films
+        _result_bubble_labels = set()
+        for _rm in all_movies:
+            _rs, _rt, _rsto = _bucket_tags(
+                _clean(_rm.get('shared_helix', '')),
+                _clean(_rm.get('shared_keywords', '')),
+                float(_rm.get('total_helix_raw', 0) or 0),
+            )
+            for _rlbl in _rs + _rt + _rsto:
+                _result_bubble_labels.add(_rlbl.lower())
+
         #source film hero card
         _src_matches = engine.df[engine.df['display_title'] == search_query]
         _src_poster_url  = ''
@@ -1460,7 +1531,7 @@ if search_query:
             _src_cast_list   = [c.strip() for c in _src_cast_full.split(',') if c.strip()][:4] if _src_cast_full else []
             _src_cast        = ', '.join(_src_cast_list)
 
-            _src_imdb_id   = str(_src_row.get('tconst_x', '') or _src_row.get('tconst', '') or '')
+            _src_imdb_id   = str(_src_row.get('tconst_x', '') or _src_row.get('tconst_y', '') or _src_row.get('tconst', '') or '')
             _src_omdb      = fetch_omdb_data(_src_imdb_id, _src_title_str, _src_year_str)
             _src_imdb_rat  = float(_src_row.get('vote_average', 0) or 0)
             _src_rt        = int(_src_omdb.get('rt_score', 0) or 0) or int(_src_row.get('rt_score', 0) or 0)
@@ -1537,6 +1608,12 @@ if search_query:
                 if not any(re.search(_pat, s.lower()) for s in _seen_src):
                     _seen_src.append(_lbl)
                     _deduped_src.append((_lbl, _bkt, _is_dom))
+
+            #only show tags that appear in at least one result film's match bubbles
+            _deduped_src = [
+                (_lbl, _bkt, _is_dom) for _lbl, _bkt, _is_dom in _deduped_src
+                if _lbl.lower() in _result_bubble_labels
+            ]
 
             _src_setting   = [l for l, b, _ in _deduped_src if b == 'setting']
             _src_tone      = [l for l, b, _ in _deduped_src if b == 'tone']

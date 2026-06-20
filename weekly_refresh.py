@@ -126,6 +126,61 @@ def _genres_str(data):
 
 
 _VALID_DATE_RE = re.compile(r'^(19|20|21)\d{2}-\d{2}-\d{2}$')
+_SLASH_DATE_RE = re.compile(r'^(\d{1,2})/(\d{1,2})/(\d{2,4})$')
+
+
+def _normalize_date(raw):
+    """Convert MM/DD/YY or MM/DD/YYYY to YYYY-MM-DD. Returns None if unparseable."""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if _VALID_DATE_RE.match(s):
+        return s
+    m = _SLASH_DATE_RE.match(s)
+    if m:
+        mo, day, yr = int(m.group(1)), int(m.group(2)), m.group(3)
+        if len(m.group(3)) == 2:
+            yr = int(yr)
+            this_century_yr = datetime.now().year % 100
+            yr = (1900 + yr) if yr > this_century_yr else (2000 + yr)
+        else:
+            yr = int(yr)
+        if 1900 <= yr <= 2100 and 1 <= mo <= 12 and 1 <= day <= 31:
+            return f"{yr:04d}-{mo:02d}-{day:02d}"
+    return None
+
+
+def _normalize_title_for_match(title):
+    """Lowercase, strip articles/possessives/punctuation for IMDb title matching."""
+    import unicodedata
+    t = unicodedata.normalize('NFKD', str(title)).encode('ascii', 'ignore').decode('ascii')
+    t = t.lower()
+    t = re.sub(r"'s\b", '', t)          # possessives
+    t = re.sub(r"[^a-z0-9\s]", '', t)   # punctuation
+    t = re.sub(r'^(the|a|an)\s+', '', t) # leading articles
+    return t.strip()
+
+
+def _normalize_dates_in_db(conn, dry_run):
+    """Find all non-ISO release_dates in movies and normalize them to YYYY-MM-DD in-place."""
+    rows = conn.execute("""
+        SELECT rowid, id, title, release_date FROM movies
+        WHERE release_date IS NOT NULL AND release_date != ''
+          AND release_date NOT LIKE '____-__-__'
+    """).fetchall()
+    fixed = 0
+    for row in rows:
+        normalized = _normalize_date(row['release_date'])
+        if normalized and normalized != str(row['release_date']).strip():
+            log.info(f"  [DATE] '{row['title']}' {row['release_date']!r} → {normalized}")
+            if not dry_run:
+                conn.execute("UPDATE movies SET release_date=? WHERE rowid=?",
+                             (normalized, row['rowid']))
+            fixed += 1
+    if not dry_run and fixed:
+        conn.commit()
+    log.info(f"  [DATE] {fixed} dates normalized")
+    return fixed
 
 
 def _dedup_valid_films(conn, dry_run):
@@ -249,9 +304,28 @@ def run_tmdb_enrichment(conn, dry_run):
 
 #IMDB updates
 def _download_tsv_gz(url):
+    try:
+        from tqdm import tqdm
+        _has_tqdm = True
+    except ImportError:
+        _has_tqdm = False
+
     log.info(f"  Downloading {url}...")
-    with urllib.request.urlopen(url, timeout=60, context=_SSL_CTX) as resp:
-        compressed = resp.read()
+    with urllib.request.urlopen(url, timeout=120, context=_SSL_CTX) as resp:
+        total = int(resp.headers.get("Content-Length", 0)) or None
+        chunks = []
+        if _has_tqdm:
+            with tqdm(total=total, unit="B", unit_scale=True, unit_divisor=1024,
+                      desc=f"  {url.split('/')[-1]}", leave=False) as bar:
+                while True:
+                    chunk = resp.read(1 << 16)  # 64 KB
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    bar.update(len(chunk))
+        else:
+            chunks = [resp.read()]
+    compressed = b"".join(chunks)
     with gzip.open(io.BytesIO(compressed), "rt", encoding="utf-8") as f:
         return f.read()
 
@@ -299,6 +373,8 @@ def run_imdb_updates(conn, dry_run):
         conn.commit()
     log.info(f"  IMDb: {updated} films updated")
     return updated
+
+
 
 
 #wiki plots
@@ -1014,7 +1090,8 @@ def main():
     ap.add_argument("--skip-wiki",  action="store_true", help="Skip Wikipedia plot fetch")
     ap.add_argument("--skip-posters", action="store_true", help="Skip poster/RT fetch")
     ap.add_argument("--skip-cache",    action="store_true", help="Skip cache rebuild")
-    ap.add_argument("--force-rebuild",  action="store_true", help="Force cache rebuild even if no content changes detected")
+    ap.add_argument("--force-rebuild",   action="store_true", help="Force cache rebuild even if no content changes detected")
+    ap.add_argument("--force-refresh",   action="store_true", help="Ignore IMDb index pickle and re-download fresh TSVs")
     ap.add_argument("--since",          type=str, default=None, help="Limit Phase 3/4 to films promoted to is_valid=1 on or after DATE (YYYY-MM-DD)")
     ap.add_argument("--verify-plots",    action="store_true", help="Verify stored wiki_plots against fresh Wikipedia fetch")
     ap.add_argument("--fix-mismatches", action="store_true", help="When used with --verify-plots, re-fetch and overwrite mismatched plots in the DB")
@@ -1065,8 +1142,8 @@ def main():
 
     conn = get_conn()
 
+    _normalize_dates_in_db(conn, args.dry_run)
     _dedup_valid_films(conn, args.dry_run)
-
     content_changed = False
 
     #TMDB
