@@ -66,7 +66,7 @@ MOOD_KEYWORDS = {
     'cynical', 'pessimistic', 'optimistic', 'nostalgic', 'romantic', 'erotic',
     'creepy', 'eerie', 'ominous', 'foreboding', 'dreadful', 'taut',
     #TMDB crowd-sourced tone/vibe descriptors
-    'appreciative', 'bewildered', 'baffled', 'audacious', 'candid',
+    'appreciative', 'bewildered', 'audacious', 'candid',
     'empathetic', 'frantic', 'disheartening', 'commanding', 'dignified',
     'blunt', 'biting', 'bold', 'bitter', 'ambivalent', 'distressing',
     'anxious', 'cautionary', 'didactic', 'dramatic', 'complex', 'critical',
@@ -313,6 +313,9 @@ KEYWORD_NORMALIZATIONS = {
     'grandfathergrandsonrelationship': 'grandparentgrandchildrelationship',
     'grandmothergranddaughterrelationship': 'grandparentgrandchildrelationship',
     'grandmothergrandsonrelationship': 'grandparentgrandchildrelationship',
+    'whodunit': 'murdermystery',
+    'mysterymurder': 'murdermystery',
+    'cozymystery': 'murdermystery',
     'cuckoldedhusband': 'cuckold',
     'cuckholdedhusband': 'cuckold',
     'cuckolded': 'cuckold',
