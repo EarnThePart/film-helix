@@ -1,4 +1,4 @@
-# FilmHelix. A Content-Based Movie Recommendation Engine.
+# FilmHelix: A Content-Based Movie Recommendation Engine.
 
 ## Overview
 
@@ -6,7 +6,7 @@ FilmHelix is a film recommendation platform that addresses a problem I've often 
 
 FilmHelix operates on the same principles as Pandora's Music Genome Project. Instead of behavioral data ("users who listened to X also listened to Y"), it analyzes the intrinsic properties of the film itself to find films with shared DNA. A traditional movie recommendation engine might observe that the user loved *Nightcrawler* (2014) and recommend *Drive* (2011) and *Prisoners* (2012) for them to watch next. The engine's results are defensible, as these films are also acclaimed crime thrillers with a neo-noir atmosphere. However, FilmHelix goes deeper. The algorithm analyzes the narrative DNA of *Nightcrawler* and seeks to provide the film that shares the most genes, producing matches such as *Ace in the Hole* (1951) and *Shattered Glass* (2003), surfacing films that are also are character studies of manipulative journalists with questionable ethics.
 
-The FilmHelix database houses approximately 33,000 films, filtered by IMDb popularity from a starting list of nearly 900,000 films. Its engine uses a 16-channel weighted similarity architecture combining TF-IDF keyword matching, sentence-transformer semantic embeddings, Wikipedia plot analysis, and a custom-built cinematic taxonomy. The taxonomy established a framework for mapping each film's narrative genome across seven dimensions: protagonist features, dramatic structure, mood/atmosphere, setting, theme(s), the core dramatic dynamic, and its cinematic style.
+The FilmHelix database houses approximately 31,000 films, filtered by IMDb popularity from a starting list of nearly 900,000 films. Its engine uses a 12-channel weighted similarity architecture combining TF-IDF keyword matching, sentence-transformer semantic embeddings, Wikipedia plot analysis, and a custom-built cinematic taxonomy. The taxonomy established a framework for mapping each film's narrative genome across eight dimensions: protagonist archetype, dramatic structure, mood/atmosphere, setting, theme(s), core dramatic dynamic, cinematic style, and narrative resolution.
 
 ---
 
