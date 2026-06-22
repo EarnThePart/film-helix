@@ -6,7 +6,14 @@ FilmHelix is a film recommendation platform that addresses a problem I've often 
 
 FilmHelix operates on the same principles as Pandora's Music Genome Project. Instead of behavioral data ("users who listened to X also listened to Y"), it analyzes the intrinsic properties of the film itself to find films with shared DNA. A traditional movie recommendation engine might observe that the user loved *Nightcrawler* (2014) and recommend *Drive* (2011) and *Prisoners* (2012) for them to watch next. The engine's results are defensible, as these films are also acclaimed crime thrillers with a neo-noir atmosphere. However, FilmHelix goes deeper. The algorithm analyzes the narrative DNA of *Nightcrawler* and seeks to provide the film that shares the most genes, producing matches such as *Ace in the Hole* (1951) and *Shattered Glass* (2003), surfacing films that are also are character studies of manipulative journalists with questionable ethics.
 
-The FilmHelix database houses approximately 33,000 films, filtered by IMDb popularity from a starting list of nearly 900,000 films. Its engine uses a 16-channel weighted similarity architecture combining TF-IDF keyword matching, sentence-transformer semantic embeddings, Wikipedia plot analysis, and a custom-built cinematic taxonomy. The taxonomy established a framework for mapping each film's narrative genome across seven dimensions: protagonist features, dramatic structure, mood/atmosphere, setting, theme(s), the core dramatic dynamic, and its cinematic style.
+The FilmHelix database houses approximately 31,000 films, filtered by IMDb popularity from a starting list of nearly 900,000 films. Its engine uses a 12-channel weighted similarity architecture combining TF-IDF keyword matching, sentence-transformer semantic embeddings, Wikipedia plot analysis, and a custom-built cinematic taxonomy. The taxonomy established a framework for mapping each film's narrative genome across eight dimensions: protagonist archetype, dramatic structure, mood/atmosphere, setting, theme(s), core dramatic dynamic, cinematic style, and narrative resolution.
+
+A Content-Based Movie Recommendation Engine.
+
+FilmHelix operates on the same principles as Pandora's Music Genome Project. Instead of behavioral data ("users who listened to X also listened to Y"), it analyzes the intrinsic properties of the film itself to find films with shared DNA.
+
+
+
 
 ---
 
@@ -214,7 +221,7 @@ python -c "import weekly_refresh; weekly_refresh.run_cache_rebuild(dry_run=False
 ---
 
 ## Known Limitations
-
+gi
 **Focus mode tradeoffs.**   A single algorithm cannot simultaneously optimize for crowd-pleasing blockbusters like *Project Hail Mary* as well as nuanced psychological character studies such as *Persona*. If the math perfectly connects *Whiplash* and *Black Swan*, it may also group generic hero's journey films together (such as *Interstellar* and *Star Wars*). FilmHelix solves this at the UI level: the "Vibe" and "Plot & Story" focus modes empower users to dictate which narrative dimensions matter most.
 
 **Freshness lag**           Films with fewer than 25,000 IMDb votes are excluded to prevent low-quality data from polluting the results. Brand new releases will occasionally drop out of the candidate pool until the weekly ETL pipeline syncs enough votes to validate them.

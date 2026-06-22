@@ -550,7 +550,7 @@ def fetch_omdb_data(imdb_id, title, year):
 
 def _runtime_str(raw):
     try:
-        m = int(raw)
+        m = int(float(raw))
         return f"{m // 60}h {m % 60}m" if m > 0 else ''
     except (ValueError, TypeError):
         return ''
@@ -633,6 +633,11 @@ _FILM_VOCAB = {
     'nasa': 'NASA', 'cia': 'CIA', 'fbi': 'FBI', 'kgb': 'KGB', 'irs': 'IRS',
     'swat': 'SWAT Team', 'lapd': 'LAPD',
     'nsa': 'National Security Agency', 'usa': 'USA',
+    'usapresident': 'American President', 'usapolitics': 'American Politics',
+    'usahistory': 'American History', 'usaelection': 'American Election',
+    'usaforeignpolicy': 'American Foreign Policy', 'usacinema': 'American Cinema',
+    'southernusa': 'Southern USA', 'americanmidwest': 'American Midwest',
+    'timessquare': 'Times Square',
     'lgbt': 'LGBT', 'hiv': 'HIV', 'ufo': 'UFO', 'lsd': 'LSD', 'bdsm': 'BDSM',
     'mi6': 'MI6', 'nypd': 'NYPD', 'vhs': 'VHS', 'dna': 'DNA', 'raf': 'RAF',
     'dea': 'DEA', 'y2k': 'Y2K', 'ussr': 'USSR', 'nri': 'NRI', 'edm': 'EDM',
@@ -865,6 +870,14 @@ _GEO_KEYWORD_TOKENS = {
     'miami', 'lasvegas', 'neworleans', 'philadelphia', 'detroit', 'seattle',
     'atlanta', 'dallas', 'houston', 'hawaii', 'alaska', 'florida', 'baltimore',
     'longisland', 'usa', 'indiana', 'centralamerica', 'southamerica',
+    'alabama', 'arizona', 'arkansas', 'colorado', 'connecticut', 'delaware',
+    'georgia', 'idaho', 'illinois', 'iowa', 'kansas', 'kentucky', 'louisiana',
+    'maine', 'maryland', 'michigan', 'minnesota', 'mississippi', 'missouri',
+    'montana', 'nebraska', 'nevada', 'newmexico', 'northcarolina', 'northdakota',
+    'ohio', 'oklahoma', 'oregon', 'rhodeisland', 'southcarolina', 'southdakota',
+    'tennessee', 'utah', 'vermont', 'virginia', 'westvirginia', 'wisconsin', 'wyoming',
+    'newengland', 'appalachia', 'midwest', 'deepsouth', 'sunbelt', 'pacificnorthwest',
+    'southernusa', 'americanmidwest', 'timessquare',
     #countries
     'cuba', 'ireland', 'france', 'germany', 'italy', 'japan', 'korea', 'southkorea',
     'china', 'india', 'russia', 'mexico', 'spain', 'brazil', 'morocco', 'egypt',
