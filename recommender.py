@@ -104,6 +104,13 @@ GEO_DISPLAY_TOKENS = {
 }
 
 KEYWORD_NORMALIZATIONS = {
+    #genre descriptors that collapse into their subject
+    'disastermovie': 'disaster', 'naturaldisaster': 'disaster',
+    #medical/psychological shorthand
+    'post-traumaticstressdisorder(ptsd)': 'ptsd', 'posttraumaticstressdisorder': 'ptsd',
+    #relationship role variants
+    'badmother-in-law': 'mother-in-law', 'interferingmother-in-law': 'mother-in-law',
+    'mother-in-lawdaughter-in-lawrelationship': 'mother-in-law',
     #legal
     'court': 'courtroom', 'trial': 'courtroom', 'court_case': 'courtroom',
     #media

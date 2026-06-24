@@ -209,10 +209,7 @@ details.plot-expander { font-size: 0.83em; color: #cbd5e1; line-height: 1.6; mar
 details.plot-expander summary { list-style: none; cursor: pointer; }
 details.plot-expander summary::-webkit-details-marker { display: none; }
 details.plot-expander:not([open]) .plot-short {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+    display: block;
 }
 details.plot-expander:not([open]) .show-more-label { display: block; color: #94a3b8; margin-top: 2px; }
 details.plot-expander:not([open]) .plot-full  { display: none; }
@@ -630,6 +627,8 @@ _FILM_VOCAB = {
     'surfing': 'Surfing',
     'deepspace': 'Deep Space',
     'spaceship': 'Spaceship',
+    'ptsd': 'PTSD',
+    'mother-in-law': 'Mother-in-Law',
     'nasa': 'NASA', 'cia': 'CIA', 'fbi': 'FBI', 'kgb': 'KGB', 'irs': 'IRS',
     'swat': 'SWAT Team', 'lapd': 'LAPD',
     'nsa': 'National Security Agency', 'usa': 'USA',
@@ -963,12 +962,21 @@ def _bucket_tags(shared_helix_str, shared_keywords_str, total_helix_raw, thresho
             else:
                 pairs.append((label, 'story', False))
 
-    #dedup across all labels
+    #dedup: suppress exact duplicates and single-word labels whose word appears in a multi-word label
+    #but never suppress a label just because it shares one word with a longer label (e.g. Christmas / Christmas Party)
     seen_dedup = []
     deduped_pairs = []
     for label, bucket, is_dom in pairs:
-        pattern = r'\b' + re.escape(label.lower()) + r'\b'
-        if not any(re.search(pattern, s.lower()) for s in seen_dedup):
+        ll = label.lower()
+        new_words = ll.split()
+        already = False
+        for s in seen_dedup:
+            sw = s.lower().split()
+            if ll == s.lower():             # exact duplicate
+                already = True; break
+            if len(new_words) == 1 and new_words[0] in sw and len(sw) == 1:
+                already = True; break       # same single word
+        if not already:
             seen_dedup.append(label)
             deduped_pairs.append((label, bucket, is_dom))
 
@@ -1037,21 +1045,26 @@ def _format_genres(genres_str):
     return ' · '.join(_format_token(g.strip()) for g in normalized.split() if g.strip())
 
 
+_SUMMARY_LIMIT = 240
+_SUMMARY_GRACE = 25
+
 def _render_logline(overview, uid):
-    """Render a summary with CSS line-clamp expand/collapse. No character-count truncation."""
+    """Hard-truncate at _SUMMARY_LIMIT chars; show expander only if remainder >= _SUMMARY_GRACE."""
     import html as _html
     if not overview:
         return
-    safe = _html.escape(overview)
-    if len(overview) <= 150:
+    if len(overview) <= _SUMMARY_LIMIT + _SUMMARY_GRACE:
+        safe = _html.escape(overview)
         st.markdown(f'<div class="card-logline">{safe}</div>', unsafe_allow_html=True)
         return
+    short = _html.escape(overview[:_SUMMARY_LIMIT].rstrip())
+    full  = _html.escape(overview)
     st.markdown(
         f'<details class="plot-expander">'
         f'<summary>'
-        f'<div class="plot-short">{safe}</div>'
+        f'<div class="plot-short">{short}…</div>'
         f'<span class="show-more-label">show more</span>'
-        f'<div class="plot-full">{safe}</div>'
+        f'<div class="plot-full">{full}</div>'
         f'<span class="show-less-label">show less</span>'
         f'</summary>'
         f'</details>',
@@ -1613,12 +1626,20 @@ if search_query:
                 else:
                     _src_all_labels.append((_kw_lbl, 'story', False))
 
-            #deduplicate tags
+            #deduplicate tags (exact duplicates and identical single words only)
             _seen_src = []
             _deduped_src = []
             for _lbl, _bkt, _is_dom in _src_all_labels:
-                _pat = r'\b' + re.escape(_lbl.lower()) + r'\b'
-                if not any(re.search(_pat, s.lower()) for s in _seen_src):
+                _ll = _lbl.lower()
+                _new_words = _ll.split()
+                _already = False
+                for _s in _seen_src:
+                    _sw = _s.lower().split()
+                    if _ll == _s.lower():
+                        _already = True; break
+                    if len(_new_words) == 1 and _new_words[0] in _sw and len(_sw) == 1:
+                        _already = True; break
+                if not _already:
                     _seen_src.append(_lbl)
                     _deduped_src.append((_lbl, _bkt, _is_dom))
 
