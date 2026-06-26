@@ -626,6 +626,7 @@ _FILM_VOCAB = {
     'spaceship': 'Spaceship',
     'ptsd': 'PTSD',
     'mother-in-law': 'Mother-in-Law',
+    'ex-detainee': 'Ex-Detainee',
     'nasa': 'NASA', 'cia': 'CIA', 'fbi': 'FBI', 'kgb': 'KGB', 'irs': 'IRS',
     'swat': 'SWAT Team', 'lapd': 'LAPD',
     'nsa': 'National Security Agency', 'usa': 'USA',

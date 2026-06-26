@@ -108,6 +108,8 @@ KEYWORD_NORMALIZATIONS = {
     'disastermovie': 'disaster', 'naturaldisaster': 'disaster',
     #medical/psychological shorthand
     'post-traumaticstressdisorder(ptsd)': 'ptsd', 'posttraumaticstressdisorder': 'ptsd',
+    #parole/release variants
+    'parole': 'parolee',
     #relationship role variants
     'badmother-in-law': 'mother-in-law', 'interferingmother-in-law': 'mother-in-law',
     'mother-in-lawdaughter-in-lawrelationship': 'mother-in-law',
