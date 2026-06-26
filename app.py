@@ -209,7 +209,10 @@ details.plot-expander { font-size: 0.83em; color: #cbd5e1; line-height: 1.6; mar
 details.plot-expander summary { list-style: none; cursor: pointer; }
 details.plot-expander summary::-webkit-details-marker { display: none; }
 details.plot-expander:not([open]) .plot-short {
-    display: block;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 }
 details.plot-expander:not([open]) .show-more-label { display: block; color: #94a3b8; margin-top: 2px; }
 details.plot-expander:not([open]) .plot-full  { display: none; }
@@ -218,12 +221,6 @@ details.plot-expander[open] .plot-short       { display: none; }
 details.plot-expander[open] .show-more-label  { display: none; }
 details.plot-expander[open] .plot-full        { display: block; }
 details.plot-expander[open] .show-less-label  { display: block; color: #94a3b8; margin-top: 2px; }
-details.plot-expander.no-overflow { pointer-events: none; }
-details.plot-expander.no-overflow .show-more-label,
-details.plot-expander.no-overflow .show-less-label { display: none !important; }
-details.plot-expander.no-overflow .plot-short {
-    display: block; overflow: visible; -webkit-line-clamp: unset; }
-details.plot-expander.no-overflow .plot-full { display: none; }
 
 details.dna-overflow { display: block; }
 details.dna-overflow summary { list-style: none; cursor: pointer; display: block; margin-top: 4px; }
@@ -1865,22 +1862,6 @@ if search_query:
     if (el) { el.scrollTop = 0; }
   };
   pd.body.appendChild(b);
-  function fixExpanders() {
-    pd.querySelectorAll('details.plot-expander:not([data-of-checked])').forEach(function(det) {
-      det.setAttribute('data-of-checked', '1');
-      var short = det.querySelector('.plot-short');
-      if (!short) return;
-      requestAnimationFrame(function() {
-        if (short.scrollHeight <= short.clientHeight + 4) {
-          det.classList.add('no-overflow');
-          det.removeAttribute('open');
-        }
-      });
-    });
-  }
-  var ofObs = new MutationObserver(fixExpanders);
-  ofObs.observe(pd.body, { childList: true, subtree: true });
-  fixExpanders();
 })();
 </script>
 """, height=0)
