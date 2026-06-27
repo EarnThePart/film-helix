@@ -110,6 +110,14 @@ KEYWORD_NORMALIZATIONS = {
     'post-traumaticstressdisorder(ptsd)': 'ptsd', 'posttraumaticstressdisorder': 'ptsd',
     #parole/release variants
     'parole': 'parolee',
+    #tone/genre normalization
+    'darkcomedy': 'darklycomedic',
+    #subject normalization
+    'unemployed': 'unemployment', 'unemploymentbenefits': 'unemployment',
+    #psychiatric institution variants (bare 'asylum' excluded — also used in refugee context)
+    'insaneasylum': 'psychiatrichospital', 'mentalasylum': 'psychiatrichospital',
+    'lunaticasylum': 'psychiatrichospital', 'psychiatricward': 'psychiatrichospital',
+    'psychiatricclinic': 'psychiatrichospital',
     #relationship role variants
     'badmother-in-law': 'mother-in-law', 'interferingmother-in-law': 'mother-in-law',
     'mother-in-lawdaughter-in-lawrelationship': 'mother-in-law',

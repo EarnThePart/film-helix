@@ -627,6 +627,7 @@ _FILM_VOCAB = {
     'ptsd': 'PTSD',
     'mother-in-law': 'Mother-in-Law',
     'ex-detainee': 'Ex-Detainee',
+    'darklycomedic': 'Dark Comedy',
     'nasa': 'NASA', 'cia': 'CIA', 'fbi': 'FBI', 'kgb': 'KGB', 'irs': 'IRS',
     'swat': 'SWAT Team', 'lapd': 'LAPD',
     'nsa': 'National Security Agency', 'usa': 'USA',
@@ -747,6 +748,8 @@ def format_bubble_tag(tag):
         'epic operatic':                     'Epic',
         'epic and grandiose':                'Epic',
         'procedural methodical':             'Procedural / Methodical',
+        'darkly comic':                      'Dark Comedy',
+        'darkly_comic':                      'Dark Comedy',
         'ensemble no single lead':           'Ensemble Cast',
         'antisocialpersonalitydisorder':     'Antisocial Personality Disorder',
         'antisocial personality disorder':   'Antisocial Personality Disorder',
@@ -931,7 +934,7 @@ def _bucket_tags(shared_helix_str, shared_keywords_str, total_helix_raw, thresho
                          'playful', 'satire', 'scathing', 'foundfootage', 'vibrant', 'sentimental', 'melancholy',
                          'tragic', 'melodramatic', 'somber', 'farcical', 'irreverent',
                          'gentle', 'wry', 'wistful', 'sardonic', 'tearjerker',
-                         'heartfelt', 'melodrama', 'lyrical', 'feelgood') or t.lower() in MOOD_KEYWORDS:
+                         'heartfelt', 'melodrama', 'lyrical', 'feelgood', 'darklycomedic') or t.lower() in MOOD_KEYWORDS:
             pairs.append((label, 'tone', False))
             continue
         if t.lower() in HIDDEN_TAGS or label.lower() in HIDDEN_TAGS:
@@ -1615,7 +1618,7 @@ if search_query:
                                       'playful', 'satire', 'scathing', 'foundfootage', 'vibrant', 'sentimental', 'melancholy',
                                       'tragic', 'melodramatic', 'somber', 'farcical', 'irreverent',
                                       'gentle', 'wry', 'wistful', 'sardonic', 'tearjerker',
-                                      'heartfelt', 'melodrama', 'lyrical', 'feelgood') or _kw_t.lower() in MOOD_KEYWORDS:
+                                      'heartfelt', 'melodrama', 'lyrical', 'feelgood', 'darklycomedic') or _kw_t.lower() in MOOD_KEYWORDS:
                     _src_all_labels.append((_kw_lbl, 'tone', False))
                 elif _is_future_decade_token(_kw_t):
                     _src_all_labels.append(('Future', 'setting', False))
