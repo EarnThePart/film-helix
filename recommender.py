@@ -861,7 +861,12 @@ class FilmHelixEngine:
             final_scores[self.df['dna_genres'].str.lower().str.contains('animation', na=False)] = 0.0
 
         if exclude_obscure:
-            final_scores[pd.to_numeric(self.df['vote_count'], errors='coerce').fillna(0) < 25000] = 0.0
+            vote_counts = pd.to_numeric(self.df['vote_count'], errors='coerce').fillna(0)
+            obscure_mask = vote_counts < 20000
+            # exempt films sharing the source title (originals, remakes, reboots)
+            src_title = self.df.iloc[idx]['title'].strip().lower()
+            title_match = self.df['title'].str.strip().str.lower() == src_title
+            final_scores[obscure_mask & ~title_match] = 0.0
 
         if exclude_sequels:
             kw_lower = self.df['dna_keywords'].str.lower()
@@ -1003,6 +1008,9 @@ class FilmHelixEngine:
                     rejoined.append(parts[i])
                     i += 1
             formatted.append(' '.join(rejoined))
+        #plain space-separated words (e.g. "Alex Garland") form one name, not a comma list
+        if len(raw.split()) > 1 and not any(re.search(r'[a-z][A-Z]', t) for t in raw.split()):
+            return ' '.join(formatted)
         return ', '.join(formatted)
 
     def _format_country(self, raw):
