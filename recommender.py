@@ -110,6 +110,13 @@ KEYWORD_NORMALIZATIONS = {
     'post-traumaticstressdisorder(ptsd)': 'ptsd', 'posttraumaticstressdisorder': 'ptsd',
     #parole/release variants
     'parole': 'parolee',
+    #"set in X" tokens — collapse into the place name
+    'setinafrica': 'africa',
+    #UK regional normalizations
+    'northireland': 'northernireland',
+    'lapland': 'england', 'northumberland': 'england', 'lancashire': 'england',
+    'surrey': 'england', 'suffolk': 'england', 'norfolk': 'england',
+    'essex': 'england', 'kent': 'england',
     #tone/genre normalization
     'darkcomedy': 'darklycomedic',
     #subject normalization
