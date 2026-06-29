@@ -639,6 +639,9 @@ _FILM_VOCAB = {
     'usaforeignpolicy': 'American Foreign Policy', 'usacinema': 'American Cinema',
     'southernusa': 'Southern USA', 'americanmidwest': 'American Midwest',
     'timessquare': 'Times Square',
+    'latinamerica': 'Latin America', 'capetown': 'Cape Town',
+    'northernireland': 'Northern Ireland',
+    'johannesburgsouthafrica': 'Johannesburg', 'london,england': 'London',
     'lgbt': 'LGBT', 'hiv': 'HIV', 'ufo': 'UFO', 'lsd': 'LSD', 'bdsm': 'BDSM',
     'mi6': 'MI6', 'nypd': 'NYPD', 'vhs': 'VHS', 'dna': 'DNA', 'raf': 'RAF',
     'dea': 'DEA', 'y2k': 'Y2K', 'ussr': 'USSR', 'nri': 'NRI', 'edm': 'EDM',
@@ -881,6 +884,12 @@ _GEO_KEYWORD_TOKENS = {
     'tennessee', 'utah', 'vermont', 'virginia', 'westvirginia', 'wisconsin', 'wyoming',
     'newengland', 'appalachia', 'midwest', 'deepsouth', 'sunbelt', 'pacificnorthwest',
     'southernusa', 'americanmidwest', 'timessquare',
+    'atlanticcity', 'saltlakecity', 'kansascity', 'cleveland', 'portland', 'oakland',
+    'northerncalifornia',
+    #continents and macro-regions
+    'africa', 'europe', 'asia', 'middleeast', 'caribbean', 'scandinavia',
+    'easterneurope', 'westerneurope', 'northafrica', 'westafrica', 'eastafrica',
+    'subsaharanafrica', 'latinamerica', 'pacificislands',
     #countries
     'cuba', 'ireland', 'france', 'germany', 'italy', 'japan', 'korea', 'southkorea',
     'china', 'india', 'russia', 'mexico', 'spain', 'brazil', 'morocco', 'egypt',
@@ -890,6 +899,7 @@ _GEO_KEYWORD_TOKENS = {
     'sweden', 'norway', 'denmark', 'finland', 'poland', 'ukraine', 'romania',
     'hungary', 'czechoslovakia', 'yugoslavia', 'austria', 'switzerland', 'belgium',
     'netherlands', 'scotland', 'england', 'wales', 'devon',
+    'newzealand', 'northernireland', 'northireland', 'eastgermany', 'westgermany',
     'israel', 'palestine', 'georgia', 'philippines', 'afghanistan', 'iceland',
     'northkorea', 'jamaica', 'bahamas', 'nepal', 'serbia', 'congo', 'taiwan',
     'algeria', 'bulgaria', 'cambodia', 'syria', 'croatia', 'sudan', 'nicaragua',
@@ -909,6 +919,11 @@ _GEO_KEYWORD_TOKENS = {
     'moscow', 'istanbul', 'cairo', 'lagos', 'nairobi', 'bangkok', 'singapore',
     'amsterdam', 'vienna', 'prague', 'warsaw', 'budapest', 'dublin', 'lisbon',
     'barcelona', 'madrid', 'milan', 'naples', 'sicily', 'mogadishu',
+    'mexicocity', 'capetown', 'johannesburg', 'johannesburgsouthafrica',
+    'auckland', 'queensland', 'melbourne', 'brisbane', 'perth',
+    'yorkshire', 'northumberland', 'lapland', 'newhamshire', 'newhampshire',
+    'victorianengland', 'northernengland', 'medievalengland', 'edwardianengland',
+    'london,england', 'westberlin', 'statenisland', 'coneyisland', 'greekisland',
 }
 
 def _is_decade_token(t):
