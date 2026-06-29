@@ -9,8 +9,8 @@ from huggingface_hub import hf_hub_download
 
 DB_PATH = 'movies.db'
 
-if not os.path.exists(DB_PATH):
-    with st.spinner("Initializing..."):
+with st.spinner("Initializing database…"):
+    try:
         hf_hub_download(
             repo_id="EarnThePart/film-helix",
             repo_type="dataset",
@@ -18,6 +18,9 @@ if not os.path.exists(DB_PATH):
             local_dir=".",
             token=st.secrets["HF_TOKEN"]
         )
+    except Exception as e:
+        st.error(f"Failed to load database from Hugging Face: {e}")
+        st.stop()
 
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "be2bc809")
 
