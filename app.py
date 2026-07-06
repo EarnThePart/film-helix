@@ -21,7 +21,7 @@ def _db_is_valid(path):
 if not _db_is_valid(DB_PATH):
     with st.spinner("Initializing database…"):
         try:
-            hf_hub_download(
+            downloaded_path = hf_hub_download(
                 repo_id="EarnThePart/film-helix",
                 repo_type="dataset",
                 filename="movies.db",
@@ -29,11 +29,15 @@ if not _db_is_valid(DB_PATH):
                 local_dir_use_symlinks=False,
                 token=st.secrets["HF_TOKEN"]
             )
+            # if hf_hub_download landed the file somewhere other than DB_PATH, copy it
+            import shutil
+            if os.path.abspath(downloaded_path) != os.path.abspath(DB_PATH):
+                shutil.copy2(downloaded_path, DB_PATH)
         except Exception as e:
             st.error(f"Failed to load database from Hugging Face: {e}")
             st.stop()
         if not _db_is_valid(DB_PATH):
-            st.error("Database downloaded but appears corrupt. Please reload.")
+            st.error(f"Database at {os.path.abspath(DB_PATH)} invalid after download ({os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 'missing'} bytes). Please reload.")
             st.stop()
 
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "be2bc809")
