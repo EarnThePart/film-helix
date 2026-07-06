@@ -7,7 +7,7 @@ import wordninja
 from recommender import FilmHelixEngine, normalize_keyword_token, MOOD_KEYWORDS
 from huggingface_hub import hf_hub_download
 
-DB_PATH = 'movies.db'
+DB_PATH = '/tmp/movies.db'
 
 def _db_is_valid(path):
     try:
@@ -25,11 +25,10 @@ if not _db_is_valid(DB_PATH):
                 repo_id="EarnThePart/film-helix",
                 repo_type="dataset",
                 filename="movies.db",
-                local_dir=".",
+                local_dir="/tmp",
                 local_dir_use_symlinks=False,
                 token=st.secrets["HF_TOKEN"]
             )
-            # if hf_hub_download landed the file somewhere other than DB_PATH, copy it
             import shutil
             if os.path.abspath(downloaded_path) != os.path.abspath(DB_PATH):
                 shutil.copy2(downloaded_path, DB_PATH)

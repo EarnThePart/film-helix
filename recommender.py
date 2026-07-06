@@ -9,7 +9,7 @@ from scipy.sparse import csr_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-DB_PATH = 'movies.db'
+DB_PATH = '/tmp/movies.db'
 EMBEDDINGS_CACHE         = 'semantic_embeddings_cache.npy'
 WIKI_EMBEDDINGS_CACHE    = 'wiki_semantic_embeddings_cache.npy'
 
