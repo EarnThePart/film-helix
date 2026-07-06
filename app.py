@@ -9,18 +9,32 @@ from huggingface_hub import hf_hub_download
 
 DB_PATH = 'movies.db'
 
-with st.spinner("Initializing database…"):
+def _db_is_valid(path):
     try:
-        hf_hub_download(
-            repo_id="EarnThePart/film-helix",
-            repo_type="dataset",
-            filename="movies.db",
-            local_dir=".",
-            token=st.secrets["HF_TOKEN"]
-        )
-    except Exception as e:
-        st.error(f"Failed to load database from Hugging Face: {e}")
-        st.stop()
+        con = sqlite3.connect(path)
+        con.execute("SELECT 1 FROM movies LIMIT 1")
+        con.close()
+        return True
+    except Exception:
+        return False
+
+if not _db_is_valid(DB_PATH):
+    with st.spinner("Initializing database…"):
+        try:
+            hf_hub_download(
+                repo_id="EarnThePart/film-helix",
+                repo_type="dataset",
+                filename="movies.db",
+                local_dir=".",
+                local_dir_use_symlinks=False,
+                token=st.secrets["HF_TOKEN"]
+            )
+        except Exception as e:
+            st.error(f"Failed to load database from Hugging Face: {e}")
+            st.stop()
+        if not _db_is_valid(DB_PATH):
+            st.error("Database downloaded but appears corrupt. Please reload.")
+            st.stop()
 
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "be2bc809")
 
@@ -704,7 +718,14 @@ _FILM_VOCAB = {
 
 
 
+_NAME_OVERRIDES = {
+    'shia la beouf': 'Shia LaBeouf',
+    'shia labeouf':  'Shia LaBeouf',
+}
+
 def _fix_name_prefixes(name):
+    if name.lower() in _NAME_OVERRIDES:
+        return _NAME_OVERRIDES[name.lower()]
     #rejoin split Irish/Scottish surname prefixes: Ian Mc Shane → Ian McShane
     parts = name.split()
     result = []
