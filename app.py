@@ -1,43 +1,43 @@
 import re
+import sqlite3
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
 import os
 import wordninja
 from recommender import FilmHelixEngine, normalize_keyword_token, MOOD_KEYWORDS
-from huggingface_hub import hf_hub_download
 
-DB_PATH = '/tmp/movies.db'
+DB_URL  = "https://huggingface.co/datasets/EarnThePart/film-helix/resolve/main/movies.db"
+DB_PATH = "/tmp/movies.db"
 
-def _db_is_valid(path):
+@st.cache_resource
+def get_database_connection():
+    if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) < 100_000_000:
+        with st.spinner("Downloading database..."):
+            try:
+                response = requests.get(DB_URL, stream=True,
+                                        headers={"Authorization": f"Bearer {st.secrets['HF_TOKEN']}"})
+                response.raise_for_status()
+                with open(DB_PATH, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            except requests.exceptions.RequestException as e:
+                st.error(f"Download failed: {e}")
+                st.stop()
     try:
-        con = sqlite3.connect(path)
-        con.execute("SELECT 1 FROM movies LIMIT 1")
-        con.close()
-        return True
-    except Exception:
-        return False
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("SELECT 1 FROM movies LIMIT 1")
+        return conn
+    except sqlite3.DatabaseError:
+        os.remove(DB_PATH)
+        st.error("Database invalid after download. Ensure the file on Hugging Face is not in WAL mode without sidecar files.")
+        st.stop()
 
-if not _db_is_valid(DB_PATH):
-    with st.spinner("Initializing database…"):
-        try:
-            downloaded_path = hf_hub_download(
-                repo_id="EarnThePart/film-helix",
-                repo_type="dataset",
-                filename="movies.db",
-                local_dir="/tmp",
-                local_dir_use_symlinks=False,
-                token=st.secrets["HF_TOKEN"]
-            )
-            import shutil
-            if os.path.abspath(downloaded_path) != os.path.abspath(DB_PATH):
-                shutil.copy2(downloaded_path, DB_PATH)
-        except Exception as e:
-            st.error(f"Failed to load database from Hugging Face: {e}")
-            st.stop()
-        if not _db_is_valid(DB_PATH):
-            st.error(f"Database at {os.path.abspath(DB_PATH)} invalid after download ({os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 'missing'} bytes). Please reload.")
-            st.stop()
+try:
+    get_database_connection()
+except Exception as e:
+    st.error(f"Failed to connect to database: {e}")
+    st.stop()
 
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "be2bc809")
 
