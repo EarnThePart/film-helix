@@ -18,7 +18,7 @@ META_KEYWORD_STOPWORDS = {
     'basedonplay', 'basedoncomicbook', 'basedoncomicseries', 'basedonscreenplay',
     'basedonnovelorbook', 'basedonnovella', 'basedonchildren', 'basedonwebseries',
     'basedonmanga', 'basedonvideogame', 'basedonrealpeople', 'basedonradioplay',
-    'lowbudget', 'cultfilm', 'surrealism',
+    'lowbudget', 'cultfilm', 'surrealism', 'cartoon',
     'colorinfilm', 'directorscut', 'sequel', 'prequel',
     'reboot', 'remake', 'duringcreditssting', 'aftercreditssting',
     'duringcreditsstinger', 'aftercreditsstinger', 'postcreditsstinger', 'postcreditssting',
@@ -119,6 +119,7 @@ KEYWORD_NORMALIZATIONS = {
     'essex': 'england', 'kent': 'england',
     #tone/genre normalization
     'darkcomedy': 'darklycomedic',
+    'galaxy': 'deepspace',
     #subject normalization
     'unemployed': 'unemployment', 'unemploymentbenefits': 'unemployment',
     #psychiatric institution variants (bare 'asylum' excluded — also used in refugee context)
@@ -166,8 +167,6 @@ KEYWORD_NORMALIZATIONS = {
     'bookstore': 'books',
     'novelist': 'writer',
     'author': 'writer',
-    #animation variants
-    'cartoon': 'animation', 'adultanimation': 'animation', 'liveactionandanimation': 'animation',
     #based-on variants
     'basedonyoungadultnovel': 'basedonbook', 'basedonshortstory': 'basedonbook',
     'basedonmemoirorautobiography': 'basedonbook', 'basedonmemoirortobiography': 'basedonbook',

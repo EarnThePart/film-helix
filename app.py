@@ -645,6 +645,8 @@ _FILM_VOCAB = {
     'deepspace': 'Deep Space',
     'spaceship': 'Spaceship',
     'ptsd': 'PTSD',
+    'walkietalkie': 'Walkie Talkie',
+    '3danimation': '3D Animation',
     'mother-in-law': 'Mother-in-Law',
     'ex-detainee': 'Ex-Detainee',
     'darklycomedic': 'Dark Comedy',
