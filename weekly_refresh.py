@@ -228,6 +228,49 @@ def _dedup_valid_films(conn, dry_run):
         log.info("  [DEDUP] no bad-date or duplicate rows found")
 
 
+def _dedup_tconst_collisions(conn, dry_run):
+    """Same-film-different-TMDB-id duplicates: group by tconst instead of TMDB id.
+    Catches cases dedupe_duplicate_ids.py/_dedup_valid_films miss (e.g. Split,
+    Alice in Wonderland, Crash — same tconst, different TMDB ids)."""
+    import re as _re
+    _ISO = _re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+    def _date_score(rd):
+        if not rd or not str(rd).strip():
+            return 0
+        return 2 if _ISO.match(str(rd).strip()) else 1
+
+    def _completeness(row):
+        return sum(1 for v in row if v is not None and str(v).strip() not in ('', 'nan', 'None'))
+
+    rows = conn.execute("""
+        SELECT rowid, * FROM movies
+        WHERE is_valid=1 AND tconst IS NOT NULL AND tconst != ''
+    """).fetchall()
+
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["tconst"], []).append(row)
+
+    to_demote = []
+    for tconst, group in groups.items():
+        if len(group) < 2:
+            continue
+        ordered = sorted(group, key=lambda r: (-_date_score(r["release_date"]), -_completeness(r), r["rowid"]))
+        for row in ordered[1:]:
+            to_demote.append(row["rowid"])
+            log.warning(f"  [DEDUP-TCONST] duplicate rowid={row['rowid']} tconst={tconst} "
+                        f"'{row['title']}' (keeping rowid={ordered[0]['rowid']})")
+
+    if to_demote:
+        log.info(f"  [DEDUP-TCONST] demoting {len(to_demote)} duplicate-tconst rows")
+        if not dry_run:
+            conn.executemany("UPDATE movies SET is_valid=0 WHERE rowid=?", [(r,) for r in to_demote])
+            conn.commit()
+    else:
+        log.info("  [DEDUP-TCONST] no duplicate-tconst rows found")
+
+
 def run_tmdb_enrichment(conn, dry_run):
     log.info("PHASE 1: TMDB enrichment")
     rows = conn.execute("""
@@ -338,7 +381,7 @@ def run_imdb_updates(conn, dry_run):
         log.error(f"  Failed to download IMDb ratings: {e}")
         return 0
 
-    #parse ratings into dict: tconst_y → (avg_rating, num_votes)
+    #parse ratings into dict: tconst → (avg_rating, num_votes)
     imdb_ratings = {}
     for line in ratings_raw.splitlines()[1:]:
         parts = line.split("\t")
@@ -348,17 +391,17 @@ def run_imdb_updates(conn, dry_run):
     log.info(f"  Loaded {len(imdb_ratings):,} IMDb ratings")
 
     rows = conn.execute("""
-        SELECT id, tconst_y, vote_count, vote_average
+        SELECT id, tconst, vote_count, vote_average
         FROM movies
-        WHERE tconst_y IS NOT NULL AND tconst_y != ''
+        WHERE tconst IS NOT NULL AND tconst != ''
     """).fetchall()
 
     updated = 0
     for row in rows:
-        tconst_y = str(row["tconst_y"]).strip()
-        if tconst_y not in imdb_ratings:
+        tconst = str(row["tconst"]).strip()
+        if tconst not in imdb_ratings:
             continue
-        new_avg, new_votes = imdb_ratings[tconst_y]
+        new_avg, new_votes = imdb_ratings[tconst]
         old_votes = float(row["vote_count"] or 0)
         if old_votes > 0 and abs(new_votes - old_votes) / old_votes < IMDB_CHANGE_PCT:
             continue
@@ -583,7 +626,7 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
     threshold = min_votes if min_votes is not None else VOTE_THRESHOLD
     if since_cutoff is not None:
         rows = conn.execute("""
-            SELECT id, title, release_date, tconst_y, vote_count
+            SELECT id, title, release_date, tconst, vote_count
             FROM movies
             WHERE wiki_plot IS NULL
               AND is_valid = 1
@@ -597,7 +640,7 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
             return 0
     else:
         rows = conn.execute("""
-            SELECT id, title, release_date, tconst_y, vote_count
+            SELECT id, title, release_date, tconst, vote_count
             FROM movies
             WHERE wiki_plot IS NULL
               AND CAST(vote_count AS REAL) >= ?
@@ -614,7 +657,7 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
     for i, row in enumerate(rows, 1):
         _year_match = re.search(r'\d{4}', str(row["release_date"] or ""))
         year = _year_match.group(0) if _year_match else ""
-        tconst = (row["tconst_y"] or "").strip() or None
+        tconst = (row["tconst"] or "").strip() or None
         plot = _fetch_wiki_plot(row["title"], year, tconst=tconst)
         if plot:
             print(f"[{i}/{total}] {row['title']} ({year}) — ok ({len(plot):,} chars)")
@@ -634,7 +677,7 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
                 "id":           row["id"],
                 "title":        row["title"],
                 "release_date": row["release_date"],
-                "tconst_y":     row["tconst_y"] or "",
+                "tconst":     row["tconst"] or "",
                 "vote_count":   row["vote_count"],
             })
         time.sleep(WIKI_SLEEP)
@@ -644,7 +687,7 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
 
     if failure_rows:
         with open(failures_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["id", "title", "release_date", "tconst_y", "vote_count"])
+            writer = csv.DictWriter(f, fieldnames=["id", "title", "release_date", "tconst", "vote_count"])
             writer.writeheader()
             writer.writerows(failure_rows)
         log.info(f"  {len(failure_rows)} failures logged to {failures_path}")
@@ -668,12 +711,12 @@ def _fetch_poster(row):
 
 
 def _fetch_rt(row):
-    tconst_y = str(row["tconst_y"] or "").strip()
-    if not tconst_y.startswith("tt"):
+    tconst = str(row["tconst"] or "").strip()
+    if not tconst.startswith("tt"):
         return (row["id"], None)
     try:
         data = requests.get(
-            f"http://www.omdbapi.com/?i={tconst_y}&apikey={OMDB_API_KEY}", timeout=6
+            f"http://www.omdbapi.com/?i={tconst}&apikey={OMDB_API_KEY}", timeout=6
         ).json()
         for r in data.get("Ratings", []):
             if r["Source"] == "Rotten Tomatoes":
@@ -714,7 +757,7 @@ def _fetch_rt_scrape(row):
     return (row["id"], None)
 
 
-def run_posters_scores(conn, dry_run, since_cutoff=None):
+def run_posters_scores(conn, dry_run, since_cutoff=None, skip_rt_backlog=False):
     log.info("PHASE 4: Posters & RT scores")
     if since_cutoff is not None:
         poster_rows = conn.execute("""
@@ -724,8 +767,8 @@ def run_posters_scores(conn, dry_run, since_cutoff=None):
             ORDER BY vote_count DESC
         """, (since_cutoff,)).fetchall()
         rt_rows = conn.execute("""
-            SELECT id, tconst_y FROM movies
-            WHERE rt_score IS NULL AND is_valid=1 AND tconst_y IS NOT NULL
+            SELECT id, tconst FROM movies
+            WHERE rt_score IS NULL AND is_valid=1 AND tconst IS NOT NULL
               AND validated_at IS NOT NULL AND validated_at >= ?
             ORDER BY vote_count DESC
         """, (since_cutoff,)).fetchall()
@@ -738,7 +781,7 @@ def run_posters_scores(conn, dry_run, since_cutoff=None):
             "SELECT id FROM movies WHERE poster IS NULL AND is_valid=1 ORDER BY vote_count DESC"
         ).fetchall()
         rt_rows = conn.execute(
-            "SELECT id, tconst_y FROM movies WHERE rt_score IS NULL AND is_valid=1 AND tconst_y IS NOT NULL ORDER BY vote_count DESC"
+            "SELECT id, tconst FROM movies WHERE rt_score IS NULL AND is_valid=1 AND tconst IS NOT NULL ORDER BY vote_count DESC"
         ).fetchall()
         log.info(f"  {len(poster_rows)} posters missing, {len(rt_rows)} RT scores missing")
 
@@ -765,7 +808,10 @@ def run_posters_scores(conn, dry_run, since_cutoff=None):
     if not dry_run:
         conn.commit()
 
-    if since_cutoff is not None:
+    if skip_rt_backlog:
+        log.info("  Skipping RT scrape fallback (--skip-rt-backlog)")
+        rt_scrape_rows = []
+    elif since_cutoff is not None:
         rt_scrape_rows = conn.execute("""
             SELECT id, title, release_date FROM movies
             WHERE is_valid=1 AND (rt_score IS NULL OR rt_score=0)
@@ -780,16 +826,23 @@ def run_posters_scores(conn, dry_run, since_cutoff=None):
         ).fetchall()
 
     if not rt_scrape_rows:
-        log.info("  0 newly promoted films need RT scores — skipping scrape fallback")
+        if not skip_rt_backlog:
+            log.info("  0 newly promoted films need RT scores — skipping scrape fallback")
     else:
         log.info(f"  RT scrape fallback: {len(rt_scrape_rows)} films still missing scores")
     rt_scraped = 0
-    for row in rt_scrape_rows:
+    RT_PROGRESS_EVERY = 100
+    RT_COMMIT_EVERY = 100
+    for i, row in enumerate(rt_scrape_rows, 1):
         film_id, score = _fetch_rt_scrape(row)
         if score is not None:
             if not dry_run:
                 conn.execute("UPDATE movies SET rt_score=? WHERE id=?", (score, film_id))
             rt_scraped += 1
+        if not dry_run and i % RT_COMMIT_EVERY == 0:
+            conn.commit()
+        if i % RT_PROGRESS_EVERY == 0:
+            log.info(f"    RT scrape: {i}/{len(rt_scrape_rows)} checked, {rt_scraped} found")
         time.sleep(0.5)
     if not dry_run:
         conn.commit()
@@ -814,7 +867,7 @@ def run_verify_ids(conn, film_ids, fix_mismatches=False):
 
     placeholders = ",".join("?" * len(film_ids))
     rows = conn.execute(f"""
-        SELECT id, title, release_date, tconst_y, wiki_plot
+        SELECT id, title, release_date, tconst, wiki_plot
         FROM movies
         WHERE id IN ({placeholders})
         ORDER BY id
@@ -829,7 +882,7 @@ def run_verify_ids(conn, film_ids, fix_mismatches=False):
         title = row["title"]
         year_m = re.search(r"\d{4}", str(row["release_date"] or ""))
         year = year_m.group(0) if year_m else ""
-        tconst = (row["tconst_y"] or "").strip() or None
+        tconst = (row["tconst"] or "").strip() or None
         stored = row["wiki_plot"] or ""
 
         wiki_title = _wikidata_title_from_tconst(tconst, title) if tconst else None
@@ -873,7 +926,7 @@ def run_verify_plots(conn, min_votes, max_votes=None, fix_mismatches=False, outp
 
     if max_votes:
         rows = conn.execute("""
-            SELECT id, title, release_date, tconst_y, wiki_plot, vote_count
+            SELECT id, title, release_date, tconst, wiki_plot, vote_count
             FROM movies
             WHERE is_valid = 1
               AND wiki_plot IS NOT NULL AND wiki_plot != ''
@@ -883,7 +936,7 @@ def run_verify_plots(conn, min_votes, max_votes=None, fix_mismatches=False, outp
         """, (min_votes, max_votes)).fetchall()
     else:
         rows = conn.execute("""
-            SELECT id, title, release_date, tconst_y, wiki_plot, vote_count
+            SELECT id, title, release_date, tconst, wiki_plot, vote_count
             FROM movies
             WHERE is_valid = 1
               AND wiki_plot IS NOT NULL AND wiki_plot != ''
@@ -902,7 +955,7 @@ def run_verify_plots(conn, min_votes, max_votes=None, fix_mismatches=False, outp
         title = row["title"]
         year_m = re.search(r"\d{4}", str(row["release_date"] or ""))
         year = year_m.group(0) if year_m else ""
-        tconst = (row["tconst_y"] or "").strip() or None
+        tconst = (row["tconst"] or "").strip() or None
 
         wiki_title = _wikidata_title_from_tconst(tconst, title) if tconst else None
         queries = [wiki_title] if wiki_title else [
@@ -941,7 +994,7 @@ def run_verify_plots(conn, min_votes, max_votes=None, fix_mismatches=False, outp
                 fetch_failures.append({
                     "id": row["id"], "title": title,
                     "release_date": row["release_date"],
-                    "tconst_y": row["tconst_y"] or "",
+                    "tconst": row["tconst"] or "",
                     "vote_count": row["vote_count"],
                 })
                 print(f"[{i}/{total}] {title!r}  sim={sim:.2f}  MISMATCH → fetch failed")
@@ -951,7 +1004,7 @@ def run_verify_plots(conn, min_votes, max_votes=None, fix_mismatches=False, outp
                 "id":             row["id"],
                 "title":          title,
                 "release_date":   row["release_date"],
-                "tconst_y":       row["tconst_y"] or "",
+                "tconst":       row["tconst"] or "",
                 "stored_length":  len(row["wiki_plot"]),
                 "fetched_length": len(fetched_plot),
                 "similarity":     round(sim, 4),
@@ -962,7 +1015,7 @@ def run_verify_plots(conn, min_votes, max_votes=None, fix_mismatches=False, outp
     #writes mismatch CSV
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "id", "title", "release_date", "tconst_y",
+            "id", "title", "release_date", "tconst",
             "stored_length", "fetched_length", "similarity"
         ])
         writer.writeheader()
@@ -971,7 +1024,7 @@ def run_verify_plots(conn, min_votes, max_votes=None, fix_mismatches=False, outp
     #writes fetch failures CSV
     if fetch_failures:
         with open("wiki_fetch_failures.csv", "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["id", "title", "release_date", "tconst_y", "vote_count"])
+            writer = csv.DictWriter(f, fieldnames=["id", "title", "release_date", "tconst", "vote_count"])
             writer.writeheader()
             writer.writerows(fetch_failures)
 
@@ -1089,6 +1142,7 @@ def main():
     ap.add_argument("--skip-imdb",  action="store_true", help="Skip IMDb vote updates")
     ap.add_argument("--skip-wiki",  action="store_true", help="Skip Wikipedia plot fetch")
     ap.add_argument("--skip-posters", action="store_true", help="Skip poster/RT fetch")
+    ap.add_argument("--skip-rt-backlog", action="store_true", help="Skip the RT scrape fallback for the full missing-score backlog (still runs OMDb-based RT fetch)")
     ap.add_argument("--skip-cache",    action="store_true", help="Skip cache rebuild")
     ap.add_argument("--force-rebuild",   action="store_true", help="Force cache rebuild even if no content changes detected")
     ap.add_argument("--force-refresh",   action="store_true", help="Ignore IMDb index pickle and re-download fresh TSVs")
@@ -1144,6 +1198,7 @@ def main():
 
     _normalize_dates_in_db(conn, args.dry_run)
     _dedup_valid_films(conn, args.dry_run)
+    _dedup_tconst_collisions(conn, args.dry_run)
     content_changed = False
 
     #TMDB
@@ -1172,21 +1227,56 @@ def main():
                 OR release_date LIKE '20__-__-__'
                 OR release_date LIKE '21__-__-__')
         """
-        new_valid = conn.execute(f"""
-            SELECT COUNT(*) FROM movies
+        candidates = conn.execute(f"""
+            SELECT rowid, id, tconst, title, release_date, vote_count FROM movies
             WHERE is_valid = 0
               AND CAST(vote_count AS REAL) >= ?
               {_date_filter}
-        """, (VOTE_THRESHOLD,)).fetchone()[0]
+        """, (VOTE_THRESHOLD,)).fetchall()
+
+        already_valid_tconsts = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT tconst FROM movies WHERE is_valid=1 AND tconst IS NOT NULL AND tconst != ''"
+            ).fetchall()
+        }
+
+        import re as _re
+        _ISO = _re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+        def _date_score(rd):
+            if not rd or not str(rd).strip():
+                return 0
+            return 2 if _ISO.match(str(rd).strip()) else 1
+
+        no_tconst = [r for r in candidates if not r["tconst"]]
+        by_tconst = {}
+        for r in candidates:
+            if r["tconst"]:
+                by_tconst.setdefault(r["tconst"], []).append(r)
+
+        to_promote_rowids = [r["rowid"] for r in no_tconst]
+        skipped_existing = 0
+        skipped_collision = 0
+        for tconst, group in by_tconst.items():
+            if tconst in already_valid_tconsts:
+                skipped_existing += len(group)
+                log.warning(f"  [PROMOTE] skipping {len(group)} row(s) for tconst={tconst} "
+                            f"— already has a valid row ('{group[0]['title']}')")
+                continue
+            ordered = sorted(group, key=lambda r: (-_date_score(r["release_date"]), r["rowid"]))
+            to_promote_rowids.append(ordered[0]["rowid"])
+            skipped_collision += len(ordered) - 1
+
+        new_valid = len(to_promote_rowids)
         if new_valid > 0:
-            conn.execute(f"""
-                UPDATE movies SET is_valid=1, validated_at=?
-                WHERE is_valid=0
-                  AND CAST(vote_count AS REAL) >= {VOTE_THRESHOLD}
-                  {_date_filter}
-            """, (datetime.now(timezone.utc).isoformat(),))
+            conn.executemany(
+                "UPDATE movies SET is_valid=1, validated_at=? WHERE rowid=?",
+                [(datetime.now(timezone.utc).isoformat(), rowid) for rowid in to_promote_rowids]
+            )
             conn.commit()
-            log.info(f"  Promoted {new_valid} films to is_valid=1")
+            log.info(f"  Promoted {new_valid} films to is_valid=1 "
+                     f"({skipped_existing} skipped — tconst already valid, "
+                     f"{skipped_collision} skipped — same-batch tconst collision)")
             content_changed = True
 
     _since_cutoff = args.since if args.since else None
@@ -1207,7 +1297,7 @@ def main():
     #posters/scores
     posters_fetched, rt_fetched = 0, 0
     if not args.skip_posters:
-        posters_fetched, rt_fetched = run_posters_scores(conn, args.dry_run, since_cutoff=_since_cutoff)
+        posters_fetched, rt_fetched = run_posters_scores(conn, args.dry_run, since_cutoff=_since_cutoff, skip_rt_backlog=args.skip_rt_backlog)
     else:
         log.info("PHASE 4: Posters & RT scores skipped.")
 

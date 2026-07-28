@@ -106,11 +106,28 @@ def run_merge():
         master['is_valid'] = 0
 
     def update_validity(row):
-        if row['vote_count'] > 1000: return 1 
-        if row['is_valid'] == 1: return 1     
+        if row['vote_count'] > 1000: return 1
+        if row['is_valid'] == 1: return 1
         return 0
 
     master['is_valid'] = master.apply(update_validity, axis=1)
+
+    #tconst collision guard: only one is_valid=1 row per tconst.
+    #Prevents merge_layers from creating a second valid row for a film that
+    #already has a valid row under a different TMDB id (e.g. Split, Alice in
+    #Wonderland, Crash — same tconst, re-scraped under a new TMDB id).
+    valid_mask = master['is_valid'] == 1
+    has_tconst = master['tconst'].notna() & (master['tconst'].astype(str).str.strip() != '')
+    dupe_groups = master.loc[valid_mask & has_tconst].groupby('tconst')
+
+    for tconst, group in dupe_groups:
+        if len(group) < 2:
+            continue
+        keeper_idx = group['vote_count'].idxmax()
+        loser_idx = [i for i in group.index if i != keeper_idx]
+        master.loc[loser_idx, 'is_valid'] = 0
+        print(f"   [TCONST GUARD] {tconst}: keeping row id={master.loc[keeper_idx, 'id']} "
+              f"'{master.loc[keeper_idx, 'title']}', demoting {len(loser_idx)} duplicate row(s)")
 
     dtdd_path = get_path(DTDD_FILENAME)
     
