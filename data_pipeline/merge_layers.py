@@ -34,9 +34,20 @@ def _clean_title(s):
     return s
 
 DB_PATH = 'movies.db'
-IMDB_BASICS_FILENAME = 'title.basics.tsv.gz' 
+IMDB_BASICS_FILENAME = 'title.basics.tsv.gz'
 IMDB_RATINGS_FILENAME = 'title.ratings.tsv'
 DTDD_FILENAME = 'dtdd_test_with_columns.csv'
+
+#TMDB ids that must never be auto-linked to an IMDb tconst via the clean_title+year_key
+#fuzzy join below. These are confirmed false-positive title/year collisions between two
+#genuinely different films (verified against IMDb title.basics) — the join has no way to
+#tell them apart from the real match, so it keeps re-linking them on every run.
+#Add an entry here (with a comment explaining the collision) whenever this happens again.
+TCONST_LINK_EXCLUSIONS = {
+    1118584,  #"Talk to Me" (Abwab, 2022 Arabic/Lebanese film) — clean_title+year_key
+              #collides with tt10638522, the real 2022 A24 horror "Talk to Me", which
+              #belongs to TMDB id 1008042. See 2026-07-28 session notes.
+}
 
 def get_path(filename):
     if os.path.exists(f"data/{filename}"): return f"data/{filename}"
@@ -93,6 +104,16 @@ def run_merge():
         
         master['vote_average'] = master['averageRating'].fillna(0)
         master['vote_count'] = master['numVotes'].fillna(0)
+
+        #block known false-positive title/year collisions from re-linking (see
+        #TCONST_LINK_EXCLUSIONS above)
+        excluded_mask = master['id'].isin(TCONST_LINK_EXCLUSIONS)
+        if excluded_mask.any():
+            print(f"   [TCONST GUARD] blocking {excluded_mask.sum()} known-bad "
+                  f"tconst link(s): {master.loc[excluded_mask, 'id'].tolist()}")
+            master.loc[excluded_mask, 'tconst'] = None
+            master.loc[excluded_mask, 'vote_average'] = 0
+            master.loc[excluded_mask, 'vote_count'] = 0
     
     else:
         print("⚠️ Skipping IMDb: Files not found.")
