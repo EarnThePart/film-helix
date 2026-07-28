@@ -664,6 +664,8 @@ _FILM_VOCAB = {
     'latinamerica': 'Latin America', 'capetown': 'Cape Town',
     'northernireland': 'Northern Ireland',
     'johannesburgsouthafrica': 'Johannesburg', 'london,england': 'London',
+    'peplum': 'Peplum',
+    'gaytheme': 'LGBT', 'boyslove(bl)': 'LGBT',
     'lgbt': 'LGBT', 'hiv': 'HIV', 'ufo': 'UFO', 'lsd': 'LSD', 'bdsm': 'BDSM',
     'mi6': 'MI6', 'nypd': 'NYPD', 'vhs': 'VHS', 'dna': 'DNA', 'raf': 'RAF',
     'dea': 'DEA', 'y2k': 'Y2K', 'ussr': 'USSR', 'nri': 'NRI', 'edm': 'EDM',
