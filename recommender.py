@@ -363,7 +363,7 @@ def normalize_keyword_token(tn):
 #weight balancing w. wiki as separate TF-IDF channel for Wikipedia plot summaries where availalbe
 
 PRIORITY_WEIGHTS = {
-    'balanced': dict(keywords=0.10, semantic=0.22, wiki=0.05, wiki_semantic=0.16, logline=0.00, tagline=0.00, mood=0.04, overview=0.02, cast=0.02, director=0.01, writer=0.00, cattags=0.07, helix_pro=0.05, helix_dyn=0.05, helix_thm=0.05, helix_str=0.04, helix_ton=0.05, helix_spl=0.00, helix_dom=0.05, helix_sty=0.03),
+    'balanced': dict(keywords=0.10, semantic=0.22, wiki=0.05, wiki_semantic=0.16, logline=0.00, tagline=0.00, mood=0.04, overview=0.02, cast=0.02, director=0.01, writer=0.00, cattags=0.07, helix_pro=0.05, helix_dyn=0.05, helix_thm=0.05, helix_str=0.04, helix_ton=0.05, helix_spl=0.00, helix_dom=0.08, helix_sty=0.03),
     'plot': dict(keywords=0.08, semantic=0.15, wiki=0.08, wiki_semantic=0.12, logline=0.00, tagline=0.00, mood=0.02, overview=0.02, cast=0.00, director=0.00, writer=0.00, cattags=0.06, helix_pro=0.07, helix_dyn=0.07, helix_thm=0.07, helix_str=0.07, helix_ton=0.07, helix_spl=0.00, helix_dom=0.08, helix_sty=0.03),
     'vibe': dict(keywords=0.05, semantic=0.16, wiki=0.03, wiki_semantic=0.05, logline=0.00, tagline=0.00, mood=0.35, overview=0.03, cast=0.00, director=0.00, writer=0.00, cattags=0.05, helix_pro=0.03, helix_dyn=0.03, helix_thm=0.03, helix_str=0.03, helix_ton=0.10, helix_spl=0.00, helix_dom=0.04, helix_sty=0.03),
     'genre': dict(keywords=0.12, semantic=0.13, wiki=0.04, wiki_semantic=0.04, logline=0.00, tagline=0.00, mood=0.09, overview=0.05, cast=0.08, director=0.04, writer=0.00, cattags=0.07, helix_pro=0.04, helix_dyn=0.04, helix_thm=0.04, helix_str=0.04, helix_ton=0.04, helix_spl=0.00, helix_dom=0.12, helix_sty=0.03),
@@ -819,7 +819,8 @@ class FilmHelixEngine:
         genres_lower = self.df['dna_genres'].str.lower()
         result_has_comedy = genres_lower.str.contains('comedy', na=False)
         result_has_animation = genres_lower.str.contains('animation|family', na=False)
-        source_primary_genre = str(self.df.iloc[idx].get('dna_genres', '') or '').split()[0].lower()
+        _genres = str(self.df.iloc[idx].get('dna_genres', '') or '').split()
+        source_primary_genre = _genres[0].lower() if _genres else ''
         if not source_genres.intersection({'comedy'}) or source_primary_genre != 'comedy':
             final_scores[result_has_comedy & (s_genre < 0.60)] = 0.0
         if not source_genres.intersection({'animation', 'family'}):
