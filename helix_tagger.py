@@ -41,7 +41,7 @@ ERROR_LOG_PATH  = "data/helix_errors.log"
 PROMPT_PATH     = "data/helix_system_prompt.txt"
 
 MODEL           = "claude-haiku-4-5-20251001"
-MAX_TOKENS      = 600
+MAX_TOKENS      = 1024
 SLEEP_BETWEEN   = 0.5
 PROGRESS_EVERY  = 50
 
@@ -384,6 +384,8 @@ def main():
                         help="Process highest vote_count first (normal queue only)")
     parser.add_argument("--progress-every", type=int,   default=PROGRESS_EVERY,
                         help="Print progress summary every N films")
+    parser.add_argument("--min-votes",      type=int,   default=2000,
+                        help="Min IMDb vote_count for normal-queue targeting (default: 2000)")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -420,18 +422,34 @@ def main():
         """, list(target_ids)).fetchall()
         print(f"[INIT] Films matched in DB: {len(rows):,}")
     else:
-        checkpoint = load_checkpoint()
-        print(f"[INIT] Checkpoint: {len(checkpoint):,} films already processed")
+        #DB column state (not the checkpoint file) is now the source of truth for
+        #targeting. A film only qualifies for a (re)tagging pass if 3 or more of
+        #the 8 helix_* fields are empty — a film missing just 1-2 fields was very
+        #likely tagged successfully with Haiku simply lacking enough signal for
+        #that one field (or a human deliberately left it blank), not a failed
+        #pass, so re-running it would risk overwriting reviewed/curated tags for
+        #no benefit. save_checkpoint() below still writes to a checkpoint file as
+        #an audit trail only; it is never used to filter what gets targeted.
         order = "vote_count DESC" if args.sort_by_votes else "vote_count DESC"
+        empty_field_count = """(
+            (CASE WHEN helix_dom IS NULL OR helix_dom = '' THEN 1 ELSE 0 END) +
+            (CASE WHEN helix_sty IS NULL OR helix_sty = '' THEN 1 ELSE 0 END) +
+            (CASE WHEN helix_pro IS NULL OR helix_pro = '' THEN 1 ELSE 0 END) +
+            (CASE WHEN helix_dyn IS NULL OR helix_dyn = '' THEN 1 ELSE 0 END) +
+            (CASE WHEN helix_thm IS NULL OR helix_thm = '' THEN 1 ELSE 0 END) +
+            (CASE WHEN helix_str IS NULL OR helix_str = '' THEN 1 ELSE 0 END) +
+            (CASE WHEN helix_ton IS NULL OR helix_ton = '' THEN 1 ELSE 0 END) +
+            (CASE WHEN helix_spl IS NULL OR helix_spl = '' THEN 1 ELSE 0 END)
+        )"""
         rows = conn.execute(f"""
             SELECT id, title, release_date, vote_count, wiki_plot, overview
             FROM movies
             WHERE is_valid = 1
-              AND wiki_plot IS NOT NULL AND LENGTH(wiki_plot) >= 1000
-              AND helix_pro IS NULL
+              AND overview IS NOT NULL AND overview != ''
+              AND {empty_field_count} >= 3
+              AND CAST(vote_count AS REAL) >= ?
             ORDER BY {order}
-        """).fetchall()
-        rows = [r for r in rows if str(r["id"]) not in checkpoint]
+        """, (args.min_votes,)).fetchall()
 
     if args.limit:
         rows = rows[:args.limit]
