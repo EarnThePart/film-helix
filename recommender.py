@@ -78,7 +78,7 @@ MOOD_KEYWORDS = {
 }
 
 #define genres for cross-contamination blocking unless overwhelming shared DNA
-STRICT_GENRES = {'comedy', 'animation', 'documentary', 'romance', 'musical'}
+STRICT_GENRES = {'comedy', 'animation', 'documentary', 'romance'}
 
 HELIX_COLUMNS = ('helix_pro', 'helix_dyn', 'helix_thm', 'helix_str', 'helix_ton', 'helix_dom', 'helix_sty')
 
@@ -768,7 +768,11 @@ class FilmHelixEngine:
         #ensure adaptive genre gate
         source_genres = set(str(self.df.iloc[idx]['dna_genres']).lower().split())
         is_strict = bool(source_genres & STRICT_GENRES)
-        gate_threshold = 0.35 if is_strict else 0.20
+        #"Music" genre alone is too broad (jazz dramas, band comedies, etc. all
+        #carry it) — a true musical also has the literal "musical" keyword token
+        source_keywords_set = set(str(self.df.iloc[idx].get('dna_keywords', '') or '').lower().split())
+        is_musical = 'music' in source_genres and 'musical' in source_keywords_set
+        gate_threshold = 0.45 if is_musical else (0.35 if is_strict else 0.20)
 
         #dual-priority blend (string, list of two strings)
         if isinstance(priority, (list, tuple)) and len(priority) == 2:
@@ -825,6 +829,14 @@ class FilmHelixEngine:
             final_scores[result_has_comedy & (s_genre < 0.60)] = 0.0
         if not source_genres.intersection({'animation', 'family'}):
             final_scores[result_has_animation & (s_genre < 0.70)] = 0.0
+        #same combined genre+keyword signal as the source-side check above —
+        #"Music" genre alone catches jazz dramas/band comedies, not just musicals
+        result_has_musical = (
+            genres_lower.str.contains('music', na=False) &
+            self.df['dna_keywords'].str.lower().str.contains(r'\bmusical\b', na=False, regex=True)
+        )
+        if not is_musical:
+            final_scores[result_has_musical & (s_genre < 0.50)] = 0.0
         if is_strict:
             result_has_strict = genres_lower.apply(
                 lambda g: bool(set(str(g).split()) & STRICT_GENRES)
@@ -851,6 +863,16 @@ class FilmHelixEngine:
             final_scores[~self.df['dna_lang'].str.lower().str.contains('en', na=False)] = 0.0
 
         #same-language affinity boost: rewards same-language results by 10%, but allows strong foreign matches (Oldboy and Parasite)
+        #NOTE (2026-08-05): tested 1.25x and 1.5x as candidates to help thin
+        #cross-language pools (Korean, Spanish, Japanese sources) surface more
+        #same-language matches. Both showed a real, reproducible problem: for
+        #large-corpus source languages (English), the boost lifts many mediocre
+        #same-language matches simultaneously, and they collectively outrank a
+        #single genuinely-better foreign match (Ring 1998 dropped from #1 to #12
+        #as a match for The Ring 2002 at 1.5x). This is a corpus-size bias, not
+        #a coefficient-tuning problem — needs per-language pool normalization or
+        #a remake/franchise override, not a higher multiplier. Reverted to the
+        #original 1.10x pending that fix.
         if not exclude_foreign:
             source_lang = str(self.df.iloc[idx].get('dna_lang', 'en') or 'en').lower()[:2]
             result_langs = self.df['dna_lang'].str.lower().str[:2].fillna('en')
