@@ -49,6 +49,19 @@ TCONST_LINK_EXCLUSIONS = {
               #belongs to TMDB id 1008042. See 2026-07-28 session notes.
 }
 
+#high-profile collision-prone films — not blocked from dedup/demotion, just logged
+#loudly whenever the tconst collision guard below touches them, so a bad demotion
+#gets noticed instead of silently shipping.
+PROTECTED_TCONSTS = {
+    'tt2316411': 'Enemy',
+    'tt0375679': 'Crash',
+    'tt33764258': 'The Odyssey',
+    'tt4972582': 'Split',
+    'tt2798920': 'Annihilation',
+    'tt0075314': 'Taxi Driver',
+    'tt1396484': 'It',
+}
+
 def get_path(filename):
     if os.path.exists(f"data/{filename}"): return f"data/{filename}"
     if os.path.exists(filename): return filename
@@ -147,6 +160,11 @@ def run_merge():
         keeper_idx = group['vote_count'].idxmax()
         loser_idx = [i for i in group.index if i != keeper_idx]
         master.loc[loser_idx, 'is_valid'] = 0
+        protected_name = PROTECTED_TCONSTS.get(str(tconst).strip())
+        if protected_name:
+            print(f"   [PROTECTED FILM] tconst={tconst} '{master.loc[keeper_idx, 'title']}' "
+                  f"(protected list entry: {protected_name}) — tconst collision guard demoted "
+                  f"{len(loser_idx)} row(s), verify this is correct")
         print(f"   [TCONST GUARD] {tconst}: keeping row id={master.loc[keeper_idx, 'id']} "
               f"'{master.loc[keeper_idx, 'title']}', demoting {len(loser_idx)} duplicate row(s)")
 

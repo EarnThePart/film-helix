@@ -28,7 +28,7 @@ import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import ssl
@@ -80,12 +80,40 @@ def get_conn():
     if "validated_at" not in existing:
         conn.execute("ALTER TABLE movies ADD COLUMN validated_at TEXT")
         conn.commit()
+    for col in ("rt_status", "rt_checked_at", "last_tmdb_check"):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE movies ADD COLUMN {col} TEXT")
+            conn.commit()
     conn.execute("""
         UPDATE movies SET validated_at='2000-01-01'
         WHERE is_valid=1 AND validated_at IS NULL
     """)
     conn.commit()
     return conn
+
+
+#protected films — high-profile collision-prone films that dedup/demotion/tconst logic
+#has mishandled before. Not blocked from operations, just logged loudly when touched.
+PROTECTED_TCONSTS = {
+    'tt2316411': 'Enemy',
+    'tt0375679': 'Crash',
+    'tt33764258': 'The Odyssey',
+    'tt4972582': 'Split',
+    'tt2798920': 'Annihilation',
+    'tt0075314': 'Taxi Driver',
+    'tt1396484': 'It',
+}
+
+
+def _warn_if_protected(tconst, title, action):
+    name = PROTECTED_TCONSTS.get(str(tconst or '').strip())
+    if name:
+        log.warning(f"  [PROTECTED FILM] {action}: tconst={tconst} '{title}' "
+                    f"(protected list entry: {name}) — verify this is correct")
+
+
+RECHECK_DAYS = 30  # cooldown before retrying a failed wiki/RT fetch
+TMDB_RECHECK_DAYS = 6  # cooldown before re-enriching an already-checked film
 
 
 def is_valid(vote_count):
@@ -203,6 +231,7 @@ def _dedup_valid_films(conn, dry_run):
         rd = str(row["release_date"] or "").strip()
         if not _VALID_DATE_RE.match(rd):
             bad_date_rowids.append(row["rowid"])
+            _warn_if_protected(row["tconst"], row["title"], "demoting for bad release_date")
             log.warning(f"  [DEDUP] bad date rowid={row['rowid']} id={row['id']} "
                         f"'{row['title']}' release_date={rd!r} — demoting")
         else:
@@ -215,6 +244,7 @@ def _dedup_valid_films(conn, dry_run):
         ordered = sorted(group, key=lambda r: (-_date_score(r["release_date"]), -_completeness(r), r["rowid"]))
         for row in ordered[1:]:
             to_demote.append(row["rowid"])
+            _warn_if_protected(row["tconst"], row["title"], "demoting duplicate row")
             log.warning(f"  [DEDUP] duplicate rowid={row['rowid']} id={tmdb_id} '{row['title']}' "
                         f"(keeping rowid={ordered[0]['rowid']})")
 
@@ -259,6 +289,7 @@ def _dedup_tconst_collisions(conn, dry_run):
         ordered = sorted(group, key=lambda r: (-_date_score(r["release_date"]), -_completeness(r), r["rowid"]))
         for row in ordered[1:]:
             to_demote.append(row["rowid"])
+            _warn_if_protected(tconst, row["title"], "demoting duplicate-tconst row")
             log.warning(f"  [DEDUP-TCONST] duplicate rowid={row['rowid']} tconst={tconst} "
                         f"'{row['title']}' (keeping rowid={ordered[0]['rowid']})")
 
@@ -271,20 +302,99 @@ def _dedup_tconst_collisions(conn, dry_run):
         log.info("  [DEDUP-TCONST] no duplicate-tconst rows found")
 
 
-def run_tmdb_enrichment(conn, dry_run):
-    log.info("PHASE 1: TMDB enrichment")
+def run_blank_date_refetch(conn, dry_run, limit):
+    """Re-fetch TMDB metadata for is_valid=0 stubs with a blank release_date.
+
+    These fall through every other phase: Phase 1's query requires a 2024-2026
+    date match (blank fails it), and the stub-linker requires a parseable year
+    to fuzzy-match against IMDb (blank fails that too) — so a real, released
+    film can sit here forever if TMDB's own snapshot was taken pre-release.
+    ~75K rows in the DB have this shape, almost all genuinely unreleased/junk
+    TMDB entries, so this can't run unbounded — it prioritizes by whatever
+    vote_count the row already has (the strongest available "this might be
+    real" signal) and takes the top `limit` rows per run.
+    """
+    log.info(f"PHASE 1a: Blank-date stub re-fetch (top {limit} by vote_count)")
     rows = conn.execute("""
-        SELECT id, title, release_date, vote_count, dna_keywords, dna_genres, runtime
+        SELECT id, title, vote_count
         FROM movies
-        WHERE (release_date LIKE '2024%' OR release_date LIKE '2025%' OR release_date LIKE '2026%') AND CAST(vote_count AS REAL) >= 1000
-           OR (
-               CAST(vote_count AS REAL) >= 1000
-               AND CAST(vote_count AS REAL) < 50000
-               AND (dna_keywords IS NULL OR TRIM(dna_keywords) = '')
-           )
+        WHERE is_valid = 0 AND (release_date IS NULL OR release_date = '')
         ORDER BY CAST(vote_count AS REAL) DESC
-    """).fetchall()
-    log.info(f"  {len(rows)} films targeted for TMDB enrichment")
+        LIMIT ?
+    """, (limit,)).fetchall()
+    log.info(f"  {len(rows)} blank-date stubs targeted (of ~75K total in this shape)")
+
+    updated = 0
+    errors = 0
+    chunks = [rows[i:i+TMDB_CHUNK] for i in range(0, len(rows), TMDB_CHUNK)]
+    for chunk_idx, chunk in enumerate(chunks):
+        with ThreadPoolExecutor(max_workers=TMDB_WORKERS) as pool:
+            futs = {pool.submit(fetch_tmdb_metadata, row["id"]): row for row in chunk}
+            for fut in as_completed(futs):
+                row = futs[fut]
+                data, err = fut.result()
+                if err:
+                    errors += 1
+                    continue
+                new_date = _normalize_date(data.get("release_date"))
+                if not new_date:
+                    continue  # still unreleased/no date on TMDB's side either
+                new_kw  = _keywords_str(data)
+                new_gen = _genres_str(data)
+                new_vc  = float(data.get("vote_count") or 0)
+                new_va  = float(data.get("vote_average") or 0)
+                raw_rt  = data.get("runtime")
+                if raw_rt is not None and (raw_rt <= 1 or raw_rt > 600):
+                    raw_rt = None
+                log.info(f"    [BLANK DATE] '{row['title']}' → release_date={new_date}, "
+                         f"votes={new_vc:,.0f}")
+                if not dry_run:
+                    conn.execute("""
+                        UPDATE movies
+                        SET title=?, original_title=?, release_date=?, runtime=?, overview=?,
+                            dna_keywords=?, dna_genres=?, vote_count=?, vote_average=?
+                        WHERE id=?
+                    """, (
+                        data.get("title") or row["title"], data.get("original_title") or row["title"],
+                        new_date, raw_rt, data.get("overview") or "",
+                        new_kw, new_gen, new_vc, new_va, row["id"],
+                    ))
+                updated += 1
+        if not dry_run:
+            conn.commit()
+        if chunk_idx < len(chunks) - 1:
+            time.sleep(TMDB_SLEEP)
+
+    log.info(f"  [BLANK DATE] {updated} stubs gained a real release_date, {errors} errors")
+    return updated
+
+
+def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
+    log.info("PHASE 1: TMDB enrichment")
+    recheck_cutoff = (datetime.now(timezone.utc) - timedelta(days=TMDB_RECHECK_DAYS)).isoformat()
+    params = [recheck_cutoff]
+    votes_clause = ""
+    if tmdb_min_votes is not None:
+        votes_clause = "AND CAST(vote_count AS REAL) >= ?"
+        params.append(tmdb_min_votes)
+    rows = conn.execute(f"""
+        SELECT id, title, release_date, vote_count, dna_keywords, dna_genres, runtime, tconst
+        FROM movies
+        WHERE (
+            (release_date LIKE '2024%' OR release_date LIKE '2025%' OR release_date LIKE '2026%') AND CAST(vote_count AS REAL) >= 1000
+            OR (
+                CAST(vote_count AS REAL) >= 1000
+                AND CAST(vote_count AS REAL) < 50000
+                AND (dna_keywords IS NULL OR TRIM(dna_keywords) = '')
+            )
+        )
+        AND (last_tmdb_check IS NULL OR last_tmdb_check < ?)
+        {votes_clause}
+        ORDER BY CAST(vote_count AS REAL) DESC
+    """, params).fetchall()
+    log.info(f"  {len(rows)} films targeted for TMDB enrichment "
+             f"(delta: last_tmdb_check older than {TMDB_RECHECK_DAYS}d or unset"
+             + (f", tmdb_min_votes={tmdb_min_votes:,})" if tmdb_min_votes is not None else ")"))
 
     updated = 0
     errors  = 0
@@ -292,6 +402,7 @@ def run_tmdb_enrichment(conn, dry_run):
 
     for chunk_idx, chunk in enumerate(chunks):
         results = {}
+        checked_ids = []
         with ThreadPoolExecutor(max_workers=TMDB_WORKERS) as pool:
             futs = {pool.submit(fetch_tmdb_metadata, row["id"]): row for row in chunk}
             for fut in as_completed(futs):
@@ -300,10 +411,14 @@ def run_tmdb_enrichment(conn, dry_run):
                 if err == "rate_limited":
                     log.warning(f"    rate limited on {row['title']} — will retry next run")
                     errors += 1
+                elif err == "not_found":
+                    errors += 1
+                    checked_ids.append(row["id"])
                 elif err:
                     errors += 1
                 elif data:
                     results[row["id"]] = (row, data)
+                    checked_ids.append(row["id"])
 
         for tmdb_id, (row, data) in results.items():
             new_kw   = _keywords_str(data)
@@ -317,22 +432,44 @@ def run_tmdb_enrichment(conn, dry_run):
                     raw_rt = None
             new_rt = raw_rt
 
+            #IMDb is the authoritative vote source once a tconst is linked (Phase 2
+            #syncs it from the real IMDb TSV). TMDB's own vote_count is typically far
+            #smaller and must not clobber it here — only use TMDB's vote_count for
+            #rows that aren't linked to IMDb yet, where it's the only signal available.
+            has_tconst = bool((row["tconst"] or "").strip())
+
             changed = (
                 new_kw  != (row["dna_keywords"] or "") or
                 new_gen != (row["dna_genres"]   or "") or
-                abs(new_vc - float(row["vote_count"] or 0)) > 1 or
+                (not has_tconst and abs(new_vc - float(row["vote_count"] or 0)) > 1) or
                 (new_rt is not None and new_rt != row["runtime"])
             )
             if changed:
                 if not dry_run:
-                    conn.execute("""
-                        UPDATE movies
-                        SET dna_keywords=?, dna_genres=?, vote_count=?, vote_average=?, runtime=?
-                        WHERE id=?
-                    """, (new_kw or row["dna_keywords"],
-                          new_gen or row["dna_genres"],
-                          new_vc, new_va, new_rt, tmdb_id))
+                    if has_tconst:
+                        conn.execute("""
+                            UPDATE movies
+                            SET dna_keywords=?, dna_genres=?, runtime=?
+                            WHERE id=?
+                        """, (new_kw or row["dna_keywords"],
+                              new_gen or row["dna_genres"],
+                              new_rt, tmdb_id))
+                    else:
+                        conn.execute("""
+                            UPDATE movies
+                            SET dna_keywords=?, dna_genres=?, vote_count=?, vote_average=?, runtime=?
+                            WHERE id=?
+                        """, (new_kw or row["dna_keywords"],
+                              new_gen or row["dna_genres"],
+                              new_vc, new_va, new_rt, tmdb_id))
                 updated += 1
+
+        if not dry_run and checked_ids:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            conn.executemany(
+                "UPDATE movies SET last_tmdb_check=? WHERE id=?",
+                [(now_iso, cid) for cid in checked_ids]
+            )
 
         if not dry_run:
             conn.commit()
@@ -373,6 +510,84 @@ def _download_tsv_gz(url):
         return f.read()
 
 
+#years targeted by the stub-linking pre-pass — matches the retired
+#ingest_modern_blockbusters.py script's scope (modern blockbusters most likely
+#to exist in TMDB as a stub row with no tconst / vote_count yet).
+STUB_TARGET_YEARS = {'2023', '2024', '2025', '2026'}
+
+
+def _parse_imdb_basics(basics_raw):
+    """Parse title.basics.tsv text.
+
+    Returns:
+      basics_by_tconst: tconst -> (primaryTitle, startYear)
+      basics_index:      (clean_title, startYear) -> tconst   (titleType='movie' only)
+    """
+    import html
+    basics_by_tconst = {}
+    basics_index = {}
+    for line in basics_raw.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 6:
+            continue
+        tconst, title_type, primary_title = parts[0], parts[1], html.unescape(parts[2])
+        start_year = parts[5]
+        if title_type != "movie":
+            continue
+        if start_year == r"\N" or not start_year.isdigit():
+            continue
+        basics_by_tconst[tconst] = (primary_title, start_year)
+        key = (_normalize_title_for_match(primary_title), start_year)
+        if key not in basics_index:  # first hit wins; collisions are rare enough to ignore
+            basics_index[key] = tconst
+    return basics_by_tconst, basics_index
+
+
+def _link_stub_films(conn, dry_run, basics_index, imdb_ratings):
+    """Fuzzy-link is_valid=0 stub films (no tconst, or vote_count=0) from recent
+    years to an IMDb tconst by title+year match, and pull in vote_count/vote_average.
+    Promotion to is_valid=1 happens later in main()'s existing valid-film check,
+    which re-scans is_valid=0 rows for vote_count >= threshold — this only needs
+    to get the tconst and vote_count onto the row.
+
+    Folds in what ingest_modern_blockbusters.py used to do as a standalone script.
+    """
+    year_clause = " OR ".join([f"release_date LIKE '{y}%'" for y in sorted(STUB_TARGET_YEARS)])
+    rows = conn.execute(f"""
+        SELECT rowid, id, title, release_date, tconst, vote_count
+        FROM movies
+        WHERE is_valid = 0
+          AND ({year_clause})
+          AND (tconst IS NULL OR tconst = '' OR vote_count IS NULL OR CAST(vote_count AS REAL) = 0)
+    """).fetchall()
+    log.info(f"  [STUB LINK] {len(rows)} is_valid=0 stub candidates in {sorted(STUB_TARGET_YEARS)}")
+
+    linked = 0
+    for row in rows:
+        year_m = re.search(r'\d{4}', str(row["release_date"] or ""))
+        if not year_m:
+            continue
+        year = year_m.group(0)
+        key = (_normalize_title_for_match(row["title"]), year)
+        tconst = basics_index.get(key)
+        if not tconst or tconst not in imdb_ratings:
+            continue
+        new_avg, new_votes = imdb_ratings[tconst]
+        _warn_if_protected(tconst, row["title"], "stub-linking to tconst")
+        log.info(f"    [STUB LINK] '{row['title']}' ({year}) → {tconst} (votes={new_votes:,})")
+        if not dry_run:
+            conn.execute(
+                "UPDATE movies SET tconst=?, vote_count=?, vote_average=? WHERE id=?",
+                (tconst, new_votes, new_avg, row["id"])
+            )
+        linked += 1
+
+    if not dry_run and linked:
+        conn.commit()
+    log.info(f"  [STUB LINK] {linked} stub films linked to an IMDb tconst")
+    return linked
+
+
 def run_imdb_updates(conn, dry_run):
     log.info("PHASE 2: IMDb updates")
     try:
@@ -390,15 +605,46 @@ def run_imdb_updates(conn, dry_run):
 
     log.info(f"  Loaded {len(imdb_ratings):,} IMDb ratings")
 
+    try:
+        basics_raw = _download_tsv_gz(IMDB_BASICS_URL)
+        basics_by_tconst, basics_index = _parse_imdb_basics(basics_raw)
+        log.info(f"  Loaded {len(basics_by_tconst):,} IMDb movie titles")
+    except Exception as e:
+        log.error(f"  Failed to download IMDb basics: {e} — skipping stub-link and title-sync")
+        basics_by_tconst, basics_index = {}, {}
+
+    #stub-linking pre-pass: give is_valid=0 stubs from recent years a tconst so
+    #they can be promoted below, folded in from the retired ingest_modern_blockbusters.py
+    linked = 0
+    if basics_index:
+        linked = _link_stub_films(conn, dry_run, basics_index, imdb_ratings)
+
     rows = conn.execute("""
-        SELECT id, tconst, vote_count, vote_average
+        SELECT id, title, tconst, vote_count, vote_average, is_valid
         FROM movies
         WHERE tconst IS NOT NULL AND tconst != ''
     """).fetchall()
 
     updated = 0
+    title_synced = 0
     for row in rows:
         tconst = str(row["tconst"]).strip()
+
+        #title sync: DB title should match IMDb's primaryTitle for the linked tconst.
+        #Scoped to is_valid=1 only — the ~33K films the app actually shows. Applying
+        #this to the full tconst-linked set (700K+ rows, mostly obscure/mismatched)
+        #produced thousands of noisy or outright wrong syncs from bad title/year
+        #collisions that don't matter for invisible rows but would for valid ones.
+        basics_entry = basics_by_tconst.get(tconst)
+        if basics_entry and row["is_valid"] == 1:
+            imdb_title = basics_entry[0]
+            if imdb_title and imdb_title != row["title"]:
+                _warn_if_protected(tconst, row["title"], "title sync (TMDB title → IMDb title)")
+                log.info(f"    [TITLE SYNC] '{row['title']}' → '{imdb_title}' (tconst={tconst})")
+                if not dry_run:
+                    conn.execute("UPDATE movies SET title=? WHERE id=?", (imdb_title, row["id"]))
+                title_synced += 1
+
         if tconst not in imdb_ratings:
             continue
         new_avg, new_votes = imdb_ratings[tconst]
@@ -414,8 +660,8 @@ def run_imdb_updates(conn, dry_run):
 
     if not dry_run:
         conn.commit()
-    log.info(f"  IMDb: {updated} films updated")
-    return updated
+    log.info(f"  IMDb: {updated} films updated, {title_synced} titles synced, {linked} stubs linked")
+    return updated + linked + title_synced
 
 
 
@@ -624,6 +870,7 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
     import csv
     log.info("PHASE 3: Wikipedia plots")
     threshold = min_votes if min_votes is not None else VOTE_THRESHOLD
+    retry_cutoff = (datetime.now(timezone.utc) - timedelta(days=RECHECK_DAYS)).isoformat()
     if since_cutoff is not None:
         rows = conn.execute("""
             SELECT id, title, release_date, tconst, vote_count
@@ -632,8 +879,9 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
               AND is_valid = 1
               AND validated_at IS NOT NULL
               AND validated_at >= ?
+              AND NOT (wiki_plot_status = 'failed' AND wiki_plot_fetched_at >= ?)
             ORDER BY CAST(vote_count AS REAL) DESC
-        """, (since_cutoff,)).fetchall()
+        """, (since_cutoff, retry_cutoff)).fetchall()
         log.info(f"  {len(rows)} newly-promoted films missing wiki plots (validated_at >= {since_cutoff[:10]})")
         if not rows:
             log.info("  0 newly promoted films need wiki plots — skipping")
@@ -645,9 +893,11 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
             WHERE wiki_plot IS NULL
               AND CAST(vote_count AS REAL) >= ?
               AND is_valid = 1
+              AND NOT (wiki_plot_status = 'failed' AND wiki_plot_fetched_at >= ?)
             ORDER BY CAST(vote_count AS REAL) DESC
-        """, (threshold,)).fetchall()
-        log.info(f"  {len(rows)} films missing wiki plots (min_votes={threshold:,})")
+        """, (threshold, retry_cutoff)).fetchall()
+        log.info(f"  {len(rows)} films missing wiki plots (min_votes={threshold:,}, "
+                 f"excluding failures retried within {RECHECK_DAYS}d)")
 
     failures_path = "wiki_fetch_failures.csv"
     failure_rows = []
@@ -673,6 +923,11 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None):
                 log.info(f"    {fetched} plots fetched so far.")
         else:
             print(f"[{i}/{total}] {row['title']} ({year}) — FAILED")
+            if not dry_run:
+                conn.execute(
+                    "UPDATE movies SET wiki_plot_status='failed', wiki_plot_fetched_at=? WHERE id=?",
+                    (datetime.now(timezone.utc).isoformat(), row["id"])
+                )
             failure_rows.append({
                 "id":           row["id"],
                 "title":        row["title"],
@@ -757,8 +1012,13 @@ def _fetch_rt_scrape(row):
     return (row["id"], None)
 
 
-def run_posters_scores(conn, dry_run, since_cutoff=None, skip_rt_backlog=False):
+def run_posters_scores(conn, dry_run, since_cutoff=None, skip_rt_backlog=False, rt_min_votes=None):
     log.info("PHASE 4: Posters & RT scores")
+    retry_cutoff = (datetime.now(timezone.utc) - timedelta(days=RECHECK_DAYS)).isoformat()
+    rt_vote_floor = rt_min_votes if rt_min_votes is not None else 0
+    rt_failed_clause = "AND NOT (rt_status = 'failed' AND rt_checked_at >= ?)"
+    rt_votes_clause = "AND CAST(vote_count AS REAL) >= ?" if rt_min_votes is not None else ""
+
     if since_cutoff is not None:
         poster_rows = conn.execute("""
             SELECT id FROM movies
@@ -766,12 +1026,15 @@ def run_posters_scores(conn, dry_run, since_cutoff=None, skip_rt_backlog=False):
               AND validated_at IS NOT NULL AND validated_at >= ?
             ORDER BY vote_count DESC
         """, (since_cutoff,)).fetchall()
-        rt_rows = conn.execute("""
+        rt_params = [since_cutoff, retry_cutoff] + ([rt_vote_floor] if rt_min_votes is not None else [])
+        rt_rows = conn.execute(f"""
             SELECT id, tconst FROM movies
             WHERE rt_score IS NULL AND is_valid=1 AND tconst IS NOT NULL
               AND validated_at IS NOT NULL AND validated_at >= ?
+              {rt_failed_clause}
+              {rt_votes_clause}
             ORDER BY vote_count DESC
-        """, (since_cutoff,)).fetchall()
+        """, rt_params).fetchall()
         log.info(f"  {len(poster_rows)} posters missing, {len(rt_rows)} RT scores missing (validated_at >= {since_cutoff[:10]})")
         if not poster_rows and not rt_rows:
             log.info("  0 newly promoted films need posters or RT scores — skipping")
@@ -780,10 +1043,16 @@ def run_posters_scores(conn, dry_run, since_cutoff=None, skip_rt_backlog=False):
         poster_rows = conn.execute(
             "SELECT id FROM movies WHERE poster IS NULL AND is_valid=1 ORDER BY vote_count DESC"
         ).fetchall()
-        rt_rows = conn.execute(
-            "SELECT id, tconst FROM movies WHERE rt_score IS NULL AND is_valid=1 AND tconst IS NOT NULL ORDER BY vote_count DESC"
-        ).fetchall()
-        log.info(f"  {len(poster_rows)} posters missing, {len(rt_rows)} RT scores missing")
+        rt_params = [retry_cutoff] + ([rt_vote_floor] if rt_min_votes is not None else [])
+        rt_rows = conn.execute(f"""
+            SELECT id, tconst FROM movies
+            WHERE rt_score IS NULL AND is_valid=1 AND tconst IS NOT NULL
+              {rt_failed_clause}
+              {rt_votes_clause}
+            ORDER BY vote_count DESC
+        """, rt_params).fetchall()
+        log.info(f"  {len(poster_rows)} posters missing, {len(rt_rows)} RT scores missing"
+                 + (f" (rt_min_votes={rt_min_votes:,})" if rt_min_votes is not None else ""))
 
     posters_fetched = 0
     chunks = [poster_rows[i:i+TMDB_CHUNK] for i in range(0, len(poster_rows), TMDB_CHUNK)]
@@ -799,10 +1068,12 @@ def run_posters_scores(conn, dry_run, since_cutoff=None, skip_rt_backlog=False):
         time.sleep(1)
 
     rt_fetched = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
     for film_id, score in map(_fetch_rt, rt_rows):
         if score is not None:
             if not dry_run:
-                conn.execute("UPDATE movies SET rt_score=? WHERE id=?", (score, film_id))
+                conn.execute("UPDATE movies SET rt_score=?, rt_status='ok', rt_checked_at=? WHERE id=?",
+                             (score, now_iso, film_id))
             rt_fetched += 1
         time.sleep(0.1)
     if not dry_run:
@@ -812,18 +1083,24 @@ def run_posters_scores(conn, dry_run, since_cutoff=None, skip_rt_backlog=False):
         log.info("  Skipping RT scrape fallback (--skip-rt-backlog)")
         rt_scrape_rows = []
     elif since_cutoff is not None:
-        rt_scrape_rows = conn.execute("""
+        scrape_params = [since_cutoff, retry_cutoff] + ([rt_vote_floor] if rt_min_votes is not None else [])
+        rt_scrape_rows = conn.execute(f"""
             SELECT id, title, release_date FROM movies
             WHERE is_valid=1 AND (rt_score IS NULL OR rt_score=0)
               AND validated_at IS NOT NULL AND validated_at >= ?
+              {rt_failed_clause}
+              {rt_votes_clause}
             ORDER BY vote_count DESC
-        """, (since_cutoff,)).fetchall()
+        """, scrape_params).fetchall()
     else:
-        rt_scrape_rows = conn.execute(
-            """SELECT id, title, release_date FROM movies
-               WHERE is_valid=1 AND (rt_score IS NULL OR rt_score=0)
-               ORDER BY vote_count DESC"""
-        ).fetchall()
+        scrape_params = [retry_cutoff] + ([rt_vote_floor] if rt_min_votes is not None else [])
+        rt_scrape_rows = conn.execute(f"""
+            SELECT id, title, release_date FROM movies
+            WHERE is_valid=1 AND (rt_score IS NULL OR rt_score=0)
+              {rt_failed_clause}
+              {rt_votes_clause}
+            ORDER BY vote_count DESC
+        """, scrape_params).fetchall()
 
     if not rt_scrape_rows:
         if not skip_rt_backlog:
@@ -835,10 +1112,16 @@ def run_posters_scores(conn, dry_run, since_cutoff=None, skip_rt_backlog=False):
     RT_COMMIT_EVERY = 100
     for i, row in enumerate(rt_scrape_rows, 1):
         film_id, score = _fetch_rt_scrape(row)
+        now_iso = datetime.now(timezone.utc).isoformat()
         if score is not None:
             if not dry_run:
-                conn.execute("UPDATE movies SET rt_score=? WHERE id=?", (score, film_id))
+                conn.execute("UPDATE movies SET rt_score=?, rt_status='ok', rt_checked_at=? WHERE id=?",
+                             (score, now_iso, film_id))
             rt_scraped += 1
+        else:
+            if not dry_run:
+                conn.execute("UPDATE movies SET rt_status='failed', rt_checked_at=? WHERE id=?",
+                             (now_iso, film_id))
         if not dry_run and i % RT_COMMIT_EVERY == 0:
             conn.commit()
         if i % RT_PROGRESS_EVERY == 0:
@@ -1139,6 +1422,8 @@ def main():
     ap = argparse.ArgumentParser(description="Film Helix weekly data pipeline")
     ap.add_argument("--dry-run",    action="store_true", help="Preview changes without writing")
     ap.add_argument("--skip-tmdb",  action="store_true", help="Skip TMDB enrichment")
+    ap.add_argument("--skip-blank-date-refetch", action="store_true", help="Skip the blank-release_date stub re-fetch pre-pass")
+    ap.add_argument("--blank-date-refetch-limit", type=int, default=500, help="Max is_valid=0 blank-release_date stubs to re-fetch per run, prioritized by existing vote_count (default: 500)")
     ap.add_argument("--skip-imdb",  action="store_true", help="Skip IMDb vote updates")
     ap.add_argument("--skip-wiki",  action="store_true", help="Skip Wikipedia plot fetch")
     ap.add_argument("--skip-posters", action="store_true", help="Skip poster/RT fetch")
@@ -1149,8 +1434,11 @@ def main():
     ap.add_argument("--since",          type=str, default=None, help="Limit Phase 3/4 to films promoted to is_valid=1 on or after DATE (YYYY-MM-DD)")
     ap.add_argument("--verify-plots",    action="store_true", help="Verify stored wiki_plots against fresh Wikipedia fetch")
     ap.add_argument("--fix-mismatches", action="store_true", help="When used with --verify-plots, re-fetch and overwrite mismatched plots in the DB")
-    ap.add_argument("--min-votes",       type=int, default=200000, help="Min vote_count for --verify-plots and wiki fetch phase (default: 200000)")
+    ap.add_argument("--min-votes",       type=int, default=200000, help="Min vote_count for --verify-plots (default: 200000)")
     ap.add_argument("--max-votes",       type=int, default=None,   help="Max vote_count for --verify-plots (optional upper bound)")
+    ap.add_argument("--tmdb-min-votes",  type=int, default=None,   help="Min vote_count for Phase 1 TMDB enrichment (default: no floor). Use for a one-off scoped run.")
+    ap.add_argument("--wiki-min-votes",  type=int, default=None,   help="Min vote_count for Phase 3 wiki plot fetch (default: 1000). Use for a one-off scoped run.")
+    ap.add_argument("--rt-min-votes",    type=int, default=None,   help="Min vote_count for Phase 4 RT fetch, OMDb + scrape fallback (default: no floor). Use for a one-off scoped run.")
     ap.add_argument("--verify-ids",      type=str, default="", help="Comma-separated film IDs to verify (read-only)")
     ap.add_argument("--verify-ids-file", type=str, default="", help="File of IDs to verify: plain text (one per line) or CSV with an 'id' column (e.g. wiki_mismatches.csv)")
     args = ap.parse_args()
@@ -1201,10 +1489,20 @@ def main():
     _dedup_tconst_collisions(conn, args.dry_run)
     content_changed = False
 
+    #blank-date stub re-fetch (must run before Phase 1/stub-linker, which both
+    #require a real release_date to target/match a film)
+    blank_date_updated = 0
+    if not args.skip_tmdb and not args.skip_blank_date_refetch:
+        blank_date_updated = run_blank_date_refetch(conn, args.dry_run, args.blank_date_refetch_limit)
+        if blank_date_updated > 0:
+            content_changed = True
+    else:
+        log.info("PHASE 1a: Blank-date stub re-fetch skipped.")
+
     #TMDB
     tmdb_updated = 0
     if not args.skip_tmdb:
-        tmdb_updated = run_tmdb_enrichment(conn, args.dry_run)
+        tmdb_updated = run_tmdb_enrichment(conn, args.dry_run, tmdb_min_votes=args.tmdb_min_votes)
         if tmdb_updated > 0:
             content_changed = True
     else:
@@ -1221,7 +1519,7 @@ def main():
 
     #valid film check
     new_valid = 0
-    if not args.dry_run and (tmdb_updated > 0 or imdb_updated > 0):
+    if not args.dry_run and (tmdb_updated > 0 or imdb_updated > 0 or blank_date_updated > 0):
         _date_filter = """
               AND (release_date LIKE '19__-__-__'
                 OR release_date LIKE '20__-__-__'
@@ -1260,12 +1558,15 @@ def main():
         for tconst, group in by_tconst.items():
             if tconst in already_valid_tconsts:
                 skipped_existing += len(group)
+                _warn_if_protected(tconst, group[0]["title"], "skipping promotion (already valid)")
                 log.warning(f"  [PROMOTE] skipping {len(group)} row(s) for tconst={tconst} "
                             f"— already has a valid row ('{group[0]['title']}')")
                 continue
             ordered = sorted(group, key=lambda r: (-_date_score(r["release_date"]), r["rowid"]))
             to_promote_rowids.append(ordered[0]["rowid"])
             skipped_collision += len(ordered) - 1
+            if len(ordered) > 1:
+                _warn_if_protected(tconst, ordered[0]["title"], "same-batch tconst collision during promotion")
 
         new_valid = len(to_promote_rowids)
         if new_valid > 0:
@@ -1286,7 +1587,7 @@ def main():
     if not args.skip_wiki:
         wiki_fetched = run_wiki_plots(
             conn, args.dry_run,
-            min_votes=args.min_votes if args.min_votes != 200000 else None,
+            min_votes=args.wiki_min_votes,
             since_cutoff=_since_cutoff,
         )
         if wiki_fetched > 0:
@@ -1297,7 +1598,10 @@ def main():
     #posters/scores
     posters_fetched, rt_fetched = 0, 0
     if not args.skip_posters:
-        posters_fetched, rt_fetched = run_posters_scores(conn, args.dry_run, since_cutoff=_since_cutoff, skip_rt_backlog=args.skip_rt_backlog)
+        posters_fetched, rt_fetched = run_posters_scores(
+            conn, args.dry_run, since_cutoff=_since_cutoff,
+            skip_rt_backlog=args.skip_rt_backlog, rt_min_votes=args.rt_min_votes,
+        )
     else:
         log.info("PHASE 4: Posters & RT scores skipped.")
 
@@ -1317,6 +1621,7 @@ def main():
     #summary
     log.info(f"{'='*60}")
     log.info(f"{mode}SUMMARY")
+    log.info(f"  Blank-date stubs fixed: {blank_date_updated}")
     log.info(f"  TMDB films updated:    {tmdb_updated}")
     log.info(f"  IMDb films updated:    {imdb_updated}")
     log.info(f"  New films validated:   {new_valid}")
@@ -1327,6 +1632,7 @@ def main():
     log.info(f"{'='*60}")
 
     print(f"\n{'─'*50}")
+    print(f"  Blank-date stubs fixed: {blank_date_updated}")
     print(f"  Films updated (TMDB):  {tmdb_updated}")
     print(f"  Films updated (IMDb):  {imdb_updated}")
     print(f"  New films validated:   {new_valid}")

@@ -10,7 +10,7 @@ Usage:
     python test_engine.py --top 20                     show top 20 per film
     python test_engine.py --priority plot              override priority
     python test_engine.py --debug                      show per-channel scores
-    python test_engine.py --obscure                    include < 50K vote films
+    python test_engine.py --obscure                    include < 20K vote films
 """
 
 import argparse
@@ -304,7 +304,7 @@ def main():
     parser.add_argument("--film",     default=None,  help="Single film to test")
     parser.add_argument("--top",      type=int, default=10)
     parser.add_argument("--priority", default="balanced")
-    parser.add_argument("--obscure",  action="store_true", help="Include < 50K vote films")
+    parser.add_argument("--obscure",  action="store_true", help="Include < 20K vote films")
     parser.add_argument("--debug",    action="store_true", help="Show per-channel score breakdown")
     parser.add_argument("--no-sequels", action="store_true", help="Exclude sequels/prequels of the source film")
     args = parser.parse_args()

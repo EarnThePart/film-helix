@@ -8,7 +8,10 @@ import wordninja
 from recommender import FilmHelixEngine, normalize_keyword_token, MOOD_KEYWORDS
 
 DB_URL  = "https://huggingface.co/datasets/EarnThePart/film-helix/resolve/main/movies.db"
-DB_PATH = "/tmp/movies.db"
+#local dev: use the real movies.db in the project root, no download needed.
+#Streamlit Cloud: repo checkout has no movies.db (too big for git), so fall back
+#to /tmp and download it from Hugging Face (see get_database_connection below).
+DB_PATH = "movies.db" if os.path.exists("movies.db") else "/tmp/movies.db"
 
 @st.cache_resource
 def get_database_connection():
@@ -510,10 +513,10 @@ if 'min_rt' not in st.session_state:            st.session_state.min_rt = 0
 if 'exclude_non_english' not in st.session_state:  st.session_state.exclude_non_english = False
 if 'exclude_animated' not in st.session_state:     st.session_state.exclude_animated = False
 if 'app_initialized' not in st.session_state:
-    st.session_state.exclude_lesser_known = True
+    st.session_state.exclude_lesser_known = False
     st.session_state.exclude_sequels      = True
     st.session_state.app_initialized      = True
-if 'exclude_lesser_known' not in st.session_state: st.session_state.exclude_lesser_known = True
+if 'exclude_lesser_known' not in st.session_state: st.session_state.exclude_lesser_known = False
 if 'exclude_sequels' not in st.session_state:      st.session_state.exclude_sequels = True
 if 'sensitive_toggle' not in st.session_state:     st.session_state.sensitive_toggle = False
 if 'show_warnings_toggle' not in st.session_state: st.session_state.show_warnings_toggle = False
@@ -859,6 +862,7 @@ HIDDEN_TAGS = {
     'suicidemission', 'suicidebomber',
     # self-harm — sensitive content
     'self-harm', 'selfharm', 'self_harm', 'selfinflictedinjury', 'self-inflictedinjury',
+    'selfmutilation', 'self-mutilation', 'self_mutilation',
     # drug use/abuse — content warning toggle covers this; 'drugs' shows instead
     'druguse', 'drugabuse', 'substanceabuse',
     # animal harm — spoiler / upsetting
@@ -1611,10 +1615,15 @@ if search_query:
             _src_omdb      = fetch_omdb_data(_src_imdb_id, _src_title_str, _src_year_str)
             _src_imdb_rat  = float(_src_row.get('vote_average', 0) or 0)
             _src_rt        = int(_src_omdb.get('rt_score', 0) or 0) or int(_src_row.get('rt_score', 0) or 0)
-            if _src_omdb.get('poster'):
-                _src_poster_url = _src_omdb['poster']
-            elif str(_src_row.get('poster', '')).startswith('http'):
+            #Prefer the DB's own TMDB poster URL over OMDb's — OMDb serves posters from
+            #Amazon's IMDb media CDN, which doesn't reliably hotlink via <img> from inside
+            #Streamlit's iframe (works fine via direct fetch, fails silently in-browser).
+            #Match result cards already only use the DB/TMDB poster (see recommender.py's
+            #'poster' field) and don't have this problem; this brings the hero card in line.
+            if str(_src_row.get('poster', '')).startswith('http'):
                 _src_poster_url = str(_src_row['poster'])
+            elif _src_omdb.get('poster'):
+                _src_poster_url = _src_omdb['poster']
 
             #collect helix tags together
             _src_helix_tags = []

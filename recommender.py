@@ -9,7 +9,10 @@ from scipy.sparse import csr_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-DB_PATH = '/tmp/movies.db'
+#local dev: read the real movies.db in the project root.
+#Streamlit Cloud: repo checkout has no movies.db (too big for git — see app.py's
+#Hugging Face download into /tmp), so fall back to the path app.py downloads it to.
+DB_PATH = 'movies.db' if os.path.exists('movies.db') else '/tmp/movies.db'
 EMBEDDINGS_CACHE         = 'semantic_embeddings_cache.npy'
 WIKI_EMBEDDINGS_CACHE    = 'wiki_semantic_embeddings_cache.npy'
 
@@ -81,6 +84,14 @@ MOOD_KEYWORDS = {
 STRICT_GENRES = {'comedy', 'animation', 'documentary', 'romance'}
 
 HELIX_COLUMNS = ('helix_pro', 'helix_dyn', 'helix_thm', 'helix_str', 'helix_ton', 'helix_dom', 'helix_sty')
+
+#style_classical_invisible is the LLM tagger's default/modal helix_sty value — it covers
+#75.7% of style-tagged films (measured via GROUP BY, see README Known Limitations), meaning
+#it signals "the tagger had nothing distinctive to say" far more often than it signals
+#genuine classical/invisible style. Treated as absent rather than as a real tag, both in
+#scoring (load_data) and in the shared-tag display list (get_recommendations), so it stops
+#pulling unrelated films together on a shared-nothing basis.
+HELIX_STY_NOISE_TAGS = {'style_classical_invisible'}
 
 #location tags for settings bucket (excluded from TF-IDF)
 GEO_DISPLAY_TOKENS = {
@@ -425,6 +436,13 @@ class FilmHelixEngine:
         def _pipe_to_space(s):
             s = str(s).strip()
             return s.replace('|', ' ') if s not in ('', 'nan') else ''
+        #see HELIX_STY_NOISE_TAGS module constant above for why style_classical_invisible
+        #is stripped here rather than vectorized as a real tag
+        def _strip_helix_sty_noise(s):
+            s = _pipe_to_space(s)
+            if not s:
+                return s
+            return ' '.join(t for t in s.split() if t not in HELIX_STY_NOISE_TAGS)
         self.df['vec_str_helix_pro'] = self.df['helix_pro'].fillna('').apply(_pipe_to_space)
         self.df['vec_str_helix_dyn'] = self.df['helix_dyn'].fillna('').apply(_pipe_to_space)
         self.df['vec_str_helix_thm'] = self.df['helix_thm'].fillna('').apply(_pipe_to_space)
@@ -432,7 +450,7 @@ class FilmHelixEngine:
         self.df['vec_str_helix_ton'] = self.df['helix_ton'].fillna('').apply(_pipe_to_space)
         self.df['vec_str_helix_spl'] = self.df['helix_spl'].fillna('').apply(_pipe_to_space)
         self.df['vec_str_helix_dom'] = self.df['helix_dom'].fillna('').apply(_pipe_to_space)
-        self.df['vec_str_helix_sty'] = self.df['helix_sty'].fillna('').apply(_pipe_to_space)
+        self.df['vec_str_helix_sty'] = self.df['helix_sty'].fillna('').apply(_strip_helix_sty_noise)
         #strip periods and hyphens ()"JohnC.Reilly" / "TonyLeungChiu-Wai")
         def _norm_names(s):
             return s.astype(str).str.replace('.', '', regex=False).str.replace('-', '', regex=False)
@@ -946,7 +964,7 @@ class FilmHelixEngine:
             for hcol in ('helix_dom', 'helix_sty', 'helix_pro', 'helix_str', 'helix_ton', 'helix_dyn', 'helix_thm'):
                 src_tags = set(str(self.df.iloc[idx].get(hcol, '') or '').split('|'))
                 res_tags = set(str(self.df.iloc[i].get(hcol, '') or '').split('|'))
-                shared = src_tags & res_tags - {'', 'nan'}
+                shared = src_tags & res_tags - {'', 'nan'} - HELIX_STY_NOISE_TAGS
                 shared_helix_tags.extend(sorted(shared))
             shared_helix = ', '.join(shared_helix_tags)
             total_helix_raw_i = float(
