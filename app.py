@@ -1952,33 +1952,62 @@ else:
     )
 
 
-#Data source attribution. Placed outside the search/no-search branches so it renders
-#on every view, including the empty state. TMDB and DoesTheDogDie both require
-#user-visible credit as a condition of API access — a README is developer-facing and
-#does not satisfy that. Collapsed by default so it stays out of the way.
+#Data source attribution. Rendered outside the search/no-search branches so it
+#appears on every view, including the empty state — TMDB and DoesTheDogDie both
+#require user-visible credit as a condition of API access, and a README is
+#developer-facing so it does not satisfy that. Kept to a single quiet footer link;
+#the detail lives in a modal so the requirement is met without competing with the
+#actual content.
+_ATTRIBUTION_SOURCES = [
+    ("TMDB", "https://www.themoviedb.org/",
+     "titles, overviews, keywords, cast &amp; crew, posters"),
+    ("IMDb", "https://www.imdb.com/interfaces/",
+     "ratings and vote counts (non-commercial datasets)"),
+    ("Rotten Tomatoes via OMDb", "https://www.omdbapi.com/",
+     "critic scores"),
+    ("Wikipedia", "https://www.wikipedia.org/",
+     'plot summaries and category tags '
+     '(<a href="https://creativecommons.org/licenses/by-sa/4.0/" '
+     'target="_blank">CC BY-SA 4.0</a>)'),
+    ("DoesTheDogDie", "https://www.doesthedogdie.com/",
+     "content and sensitivity warnings"),
+]
+
+
+def _render_attribution_body():
+    #A two-column grid rather than a bullet list: it keeps every description
+    #starting at the same x-position, which a markdown list cannot do because the
+    #source names differ in width.
+    rows = "".join(
+        f'<div style="padding:3px 0"><a href="{url}" target="_blank">{name}</a>:</div>'
+        f'<div style="padding:3px 0">{desc}</div>'
+        for name, url, desc in _ATTRIBUTION_SOURCES
+    )
+    st.markdown(
+        "<p style='margin:0 0 14px'><strong>Film Helix</strong> matches films on "
+        "narrative DNA. It is built on data from:</p>"
+        "<div style='display:grid;grid-template-columns:max-content 1fr;"
+        "column-gap:18px;align-items:start;line-height:1.5'>"
+        f"{rows}"
+        "</div>"
+        "<p style='margin:18px 0 0;font-style:italic'>This product uses the TMDB API "
+        "but is not endorsed or certified by TMDB.</p>"
+        "<p style='margin:12px 0 0'>Film Helix is a non-commercial project. "
+        "It is not affiliated with any of the above services.</p>",
+        unsafe_allow_html=True,
+    )
+
+
+@st.dialog("Data Sources & Attribution", width="large")
+def _attribution_dialog():
+    _render_attribution_body()
+
+
 st.markdown("<div style='margin-top:64px'></div>", unsafe_allow_html=True)
 st.divider()
-with st.expander("Data sources & attribution"):
-    st.markdown(
-        """
-**Film Helix** matches films on narrative DNA. It is built on data from:
-
-- **[TMDB](https://www.themoviedb.org/)** — titles, overviews, keywords, cast & crew, posters
-- **[IMDb](https://www.imdb.com/interfaces/)** — ratings and vote counts (non-commercial datasets)
-- **[Rotten Tomatoes](https://www.rottentomatoes.com/)** via **[OMDb](https://www.omdbapi.com/)** — critic scores
-- **[Wikipedia](https://www.wikipedia.org/)** — plot summaries and category tags
-  ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/))
-- **[DoesTheDogDie](https://www.doesthedogdie.com/)** — content and sensitivity warnings
-
-*This product uses the TMDB API but is not endorsed or certified by TMDB.*
-
-Film Helix is a non-commercial portfolio project. It is not affiliated with any of
-the above services.
-        """
-    )
-st.markdown(
-    "<div style='color:#64748b;font-size:0.8em;text-align:center;margin:8px 0 40px'>"
-    "Data: TMDB · IMDb · Rotten Tomatoes via OMDb · Wikipedia · DoesTheDogDie"
-    "</div>",
-    unsafe_allow_html=True,
-)
+_af_l, _af_c, _af_r = st.columns([1, 1, 1])
+with _af_c:
+    if st.button("Data Sources & Attribution", key="attribution_link",
+                 type="tertiary", use_container_width=True):
+        _attribution_dialog()
+st.markdown("<div style='margin-bottom:32px'></div>", unsafe_allow_html=True)
