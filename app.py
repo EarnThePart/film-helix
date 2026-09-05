@@ -1950,3 +1950,35 @@ else:
         "Search for a film in the sidebar to find its narrative matches.</div>",
         unsafe_allow_html=True
     )
+
+
+#Data source attribution. Placed outside the search/no-search branches so it renders
+#on every view, including the empty state. TMDB and DoesTheDogDie both require
+#user-visible credit as a condition of API access — a README is developer-facing and
+#does not satisfy that. Collapsed by default so it stays out of the way.
+st.markdown("<div style='margin-top:64px'></div>", unsafe_allow_html=True)
+st.divider()
+with st.expander("Data sources & attribution"):
+    st.markdown(
+        """
+**Film Helix** matches films on narrative DNA. It is built on data from:
+
+- **[TMDB](https://www.themoviedb.org/)** — titles, overviews, keywords, cast & crew, posters
+- **[IMDb](https://www.imdb.com/interfaces/)** — ratings and vote counts (non-commercial datasets)
+- **[Rotten Tomatoes](https://www.rottentomatoes.com/)** via **[OMDb](https://www.omdbapi.com/)** — critic scores
+- **[Wikipedia](https://www.wikipedia.org/)** — plot summaries and category tags
+  ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/))
+- **[DoesTheDogDie](https://www.doesthedogdie.com/)** — content and sensitivity warnings
+
+*This product uses the TMDB API but is not endorsed or certified by TMDB.*
+
+Film Helix is a non-commercial portfolio project. It is not affiliated with any of
+the above services.
+        """
+    )
+st.markdown(
+    "<div style='color:#64748b;font-size:0.8em;text-align:center;margin:8px 0 40px'>"
+    "Data: TMDB · IMDb · Rotten Tomatoes via OMDb · Wikipedia · DoesTheDogDie"
+    "</div>",
+    unsafe_allow_html=True,
+)

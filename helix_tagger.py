@@ -28,12 +28,19 @@ import time
 import sys
 import os
 import re
+import unicodedata
 import argparse
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import anthropic
+
+#read ANTHROPIC_API_KEY (and the rest) from .env like every other script here.
+#Without this the key has to be exported into the shell by hand, which is why a
+#run could fail with "Set ANTHROPIC_API_KEY" despite .env holding it.
+from dotenv import load_dotenv
+load_dotenv()
 
 DB_PATH         = "movies.db"
 CHECKPOINT_PATH = "data/helix_processed_tmdb_ids.txt"
@@ -170,6 +177,23 @@ def log_hallucination(tmdb_id, title, bucket, tag):
                 f"id={tmdb_id} title={title!r} bucket={bucket} invalid_tag={tag!r}\n")
 
 
+class FatalAPIError(Exception):
+    """An API failure that retrying cannot fix — abort the whole run."""
+
+
+#Substrings identifying account/request problems that will never resolve on retry.
+#Credit exhaustion is the one that bit: the old code treated it as transient, so it
+#backed off 10/30/90/270s per film and then repeated that for the NEXT film. Across
+#900 queued films that is ~100 hours of sleeping on an error that cannot clear.
+_FATAL_MARKERS = (
+    "credit balance is too low",
+    "invalid x-api-key",
+    "authentication_error",
+    "permission_error",
+    "your account has been disabled",
+)
+
+
 def call_haiku(client, system_prompt, user_message, retry=0):
     try:
         return client.messages.create(
@@ -189,6 +213,11 @@ def call_haiku(client, system_prompt, user_message, retry=0):
         time.sleep(wait)
         return call_haiku(client, system_prompt, user_message, retry + 1) if retry < 4 else None
     except anthropic.APIError as e:
+        msg = str(e).lower()
+        #Account-level failures affect every film equally, so retrying this one —
+        #or moving on to the next — is pure waste. Stop the run and say why.
+        if any(marker in msg for marker in _FATAL_MARKERS):
+            raise FatalAPIError(str(e)) from e
         waits = [10, 30, 90, 270]
         wait = waits[min(retry, len(waits) - 1)]
         print(f"\n  [API ERROR] {e} — sleeping {wait}s...", flush=True)
@@ -338,9 +367,51 @@ class CostTracker:
         )
 
 
+def _plot_is_trustworthy(row, year):
+    """Reason this row's wiki_plot must not be sent to the model, or None if fine.
+
+    FAIL-SAFE. Wikipedia lookups historically resolved to the wrong article — the
+    old fetcher gave "(YYYY film)" formatting a bigger bonus than having the RIGHT
+    year, so Arrival (2016) stored the plot of "The Arrival (1991 film)" and
+    X2: X-Men United stored "Identity (2003 film)". Tagging on a wrong plot bakes
+    another film's DNA into 8 helix columns and costs real money to undo, so a
+    suspect plot is dropped and the film is tagged from its overview alone.
+    Dropping a good plot is cheap; tagging on a wrong one is not.
+    """
+    plot = (row["wiki_plot"] or "").strip()
+    if not plot:
+        return None
+    try:
+        wiki_title = (row["wiki_title"] or "").strip()
+    except (IndexError, KeyError):
+        wiki_title = ""
+    if not wiki_title:
+        return None  # unverifiable; overview still anchors the prompt
+
+    def _words(s):
+        stop = {"the", "a", "an", "of", "and", "in", "on", "at", "to", "for",
+                "is", "it", "be", "or", "by", "as", "up", "do"}
+        s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode("ascii")
+        return {w for w in re.sub(r"[^a-z0-9 ]", " ", s.lower()).split()
+                if w and w not in stop}
+
+    if not (_words(row["title"]) & _words(wiki_title)):
+        return f"plot came from unrelated article {wiki_title!r}"
+    m = re.search(r"\((\d{4})\b", wiki_title)
+    if m and str(year).isdigit() and abs(int(m.group(1)) - int(year)) > 1:
+        return f"plot came from {wiki_title!r} but film is {year}"
+    return None
+
+
 def build_user_message(row, year):
     plot     = (row["wiki_plot"] or "").strip()
     overview = (row["overview"]  or "").strip()
+
+    bad = _plot_is_trustworthy(row, year)
+    if bad:
+        print(f"    [PLOT GUARD] {row['title']} ({year}): {bad} — tagging from overview only")
+        plot = ""
+
     words = plot.split()
     if len(words) > 1500:
         plot = " ".join(words[:1500]) + " [truncated]"
@@ -384,6 +455,10 @@ def main():
                         help="Process highest vote_count first (normal queue only)")
     parser.add_argument("--progress-every", type=int,   default=PROGRESS_EVERY,
                         help="Print progress summary every N films")
+    parser.add_argument("--include-documentaries", action="store_true",
+                        help="Also tag Documentary films. Off by default: the Helix taxonomy is built for "
+                             "narrative fiction, so documentaries return mostly-empty buckets and then "
+                             "re-enter the queue forever, costing money each run without converging.")
     parser.add_argument("--min-votes",      type=int,   default=2000,
                         help="Min IMDb vote_count for normal-queue targeting (default: 2000)")
     args = parser.parse_args()
@@ -409,7 +484,7 @@ def main():
         print(f"[INIT] ids-file mode: {len(target_ids):,} IDs loaded from {args.ids_file}")
         placeholders = ",".join("?" * len(target_ids))
         rows = conn.execute(f"""
-            SELECT id, title, release_date, vote_count, wiki_plot, overview
+            SELECT id, title, release_date, vote_count, wiki_plot, wiki_title, overview
             FROM movies
             WHERE rowid IN (
                 SELECT MIN(rowid) FROM movies
@@ -441,12 +516,25 @@ def main():
             (CASE WHEN helix_ton IS NULL OR helix_ton = '' THEN 1 ELSE 0 END) +
             (CASE WHEN helix_spl IS NULL OR helix_spl = '' THEN 1 ELSE 0 END)
         )"""
+        #Documentaries are excluded by default. The Helix taxonomy describes
+        #narrative fiction — protagonist archetype, character dynamic, spoiler
+        #resolution — and a documentary genuinely has none of those, so the model
+        #correctly returns empty buckets. Those empties then satisfy
+        #`empty_field_count >= 3`, putting the film straight back in the queue to be
+        #re-tagged, come back sparse, and re-queue again: a loop that costs money
+        #every run and never converges. Measured 2026-09-05: documentaries were
+        #11.2x over-represented in the queue (25% of it vs 2% of the library), and
+        #already-attempted ones sat at 0-4 of 8 dimensions.
+        #Use --include-documentaries to override.
+        doc_clause = "" if args.include_documentaries else \
+            "AND (dna_genres IS NULL OR dna_genres NOT LIKE '%Documentary%')"
         rows = conn.execute(f"""
-            SELECT id, title, release_date, vote_count, wiki_plot, overview
+            SELECT id, title, release_date, vote_count, wiki_plot, wiki_title, overview
             FROM movies
             WHERE is_valid = 1
               AND overview IS NOT NULL AND overview != ''
               AND {empty_field_count} >= 3
+              {doc_clause}
               AND CAST(vote_count AS REAL) >= ?
             ORDER BY {order}
         """, (args.min_votes,)).fetchall()
@@ -500,7 +588,18 @@ def main():
         year    = (row["release_date"] or "")[:4]
 
         user_message = build_user_message(row, year)
-        response = call_haiku(client, system_prompt, user_message)
+        try:
+            response = call_haiku(client, system_prompt, user_message)
+        except FatalAPIError as e:
+            #`i` is the loop index, so it is always bound here; the run's own
+            #`processed` counter is computed further down and would NameError.
+            print(f"\n{'='*64}", flush=True)
+            print(f"  ABORTING — unrecoverable API error:\n    {e}", flush=True)
+            print(f"  {i:,} of {len(rows):,} films attempted this run; all tags committed.", flush=True)
+            print(f"  Fix the account issue and re-run; the queue resumes where it stopped.", flush=True)
+            print(f"{'='*64}\n", flush=True)
+            log_error(tmdb_id, title, f"FATAL: {e}")
+            break
 
         if response is None:
             errors += 1

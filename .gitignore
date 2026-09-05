@@ -16,6 +16,7 @@
 !data_pipeline/**
 
 #config
+!CLAUDE.md
 !requirements.txt
 !README.md
 !.gitignore

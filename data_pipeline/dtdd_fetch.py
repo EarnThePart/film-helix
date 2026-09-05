@@ -28,11 +28,14 @@ import ssl
 import certifi
 import argparse
 import time
+
+from dotenv import load_dotenv
+load_dotenv()
 from pathlib import Path
 
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
-API_KEY       = "[PRIVATE]"
+API_KEY       = os.environ.get("DTDD_API_KEY", "")
 BASE_URL      = "https://www.doesthedogdie.com"
 HEADERS       = {"Accept": "application/json", "X-API-KEY": API_KEY}
 OUTPUT_CSV    = "data/dtdd_warnings.csv"
