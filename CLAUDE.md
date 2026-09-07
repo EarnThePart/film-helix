@@ -388,6 +388,37 @@ unaffected.
 - Real UI pills are Balanced | Plot & Story | Genre | Style & Tone | Cast | Director | Writer — no
   separate "Mood" pill exists; "Style & Tone" (internal key "vibe") is the mood/atmosphere mode
 
+### Future: limited series / miniseries support (not started, 2026-09-05)
+Idea: let users opt into TV matches — El Camino -> Breaking Bad, Shot Caller ->
+The Night Of. The engine is already agnostic about what a "title" is: overview,
+plot, keywords, cast, crew and the helix taxonomy all apply to a series unchanged,
+so all 17 scoring channels would work as-is.
+
+Scope it to **tvMiniSeries first**, not all TV. Matching quality tracks narrative
+cohesion: The Night Of (8 episodes, one story) has tight DNA, while a 200-episode
+procedural has diffuse DNA and would mostly add noise.
+
+What actually needs building:
+- TMDB TV endpoints are a different shape: `/tv/{id}` not `/movie/{id}`, `name` not
+  `title`, `first_air_date` not `release_date`, credits under `aggregate_credits`.
+  The whole pipeline assumes the movie shape — this is the bulk of the work.
+- `_parse_imdb_basics` filters `titleType != "movie"`; TV needs `tvSeries` /
+  `tvMiniSeries`. One line, but it roughly doubles the index.
+- Runtime is not comparable (a 62-hour series vs a 2-hour film), and a series
+  `wiki_plot` is a season-by-season summary — much longer and structurally
+  different, so wiki_semantic chunking likely needs its own handling.
+- Add a `media_type` column, a UI toggle, and recommender filtering on it.
+
+### Search box ordering (known limitation, 2026-09-05)
+`_ordered_titles` IS sorted by vote_count DESC, but `st.selectbox` re-ranks matches
+client-side by string-match quality, so typing "spider" surfaces Spider (2002,
+42K votes) above Spider-Man: No Way Home (1.0M votes). No selectbox parameter
+controls this. Fixing it means giving up the native widget:
+`st.text_input` does NOT fire per keystroke (Enter/blur only), so the realistic
+option is `streamlit-searchbox`, which trades a server round-trip per keystroke for
+control over ranking. Native filtering is client-side and instant; any custom
+ranking is inherently slower. Evaluate the latency before committing to it.
+
 ### Future Work
 - MMR (Maximal Marginal Relevance) re-ranking to reduce result clustering
 - Same-country bonus for matching
