@@ -585,6 +585,10 @@ def _lang_display(code):
 _LOWER_WORDS = {'and', 'as', 'vs', 'by', 'of', 'the', 'in', 'on', 'for', 'with',
                 'or', 'del', 'de', 'von', 'van', 'la', 'le', 'di'}
 
+#wordninja splits these out as standalone words, and .title() would render
+#them 'Tv'/'Cia'. Keyed lowercase, value is the display form.
+_ACRONYMS = {'tv': 'TV', 'cia': 'CIA', 'fbi': 'FBI', 'nasa': 'NASA'}
+
 #genre fixes (from wordninja errors)
 _FILM_VOCAB = {
     'giallo': 'Giallo', 'neonoir': 'Neo-noir', 'filmnoir': 'Film Noir',
@@ -769,8 +773,16 @@ def _format_token(w):
 
     if parts and min(len(p) for p in parts) <= 1:
         return w.title()
-    return ' '.join(p.lower() if i > 0 and p.lower() in _LOWER_WORDS else p.title()
-                     for i, p in enumerate(parts))
+    return ' '.join(_format_part(p, i) for i, p in enumerate(parts))
+
+
+def _format_part(p, i):
+    pl = p.lower()
+    if pl in _ACRONYMS:
+        return _ACRONYMS[pl]
+    if i > 0 and pl in _LOWER_WORDS:
+        return pl
+    return p.title()
 
 
 def format_bubble_tag(tag):

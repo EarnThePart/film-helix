@@ -189,6 +189,9 @@ KEYWORD_NORMALIZATIONS = {
     'bookstore': 'books',
     'novelist': 'writer',
     'author': 'writer',
+    #boxing — TMDB tags the sport and the participant inconsistently; 48 valid
+    #films carried 'boxer' without 'boxing' and so missed the channel entirely.
+    'boxer': 'boxing',
     #based-on variants
     'basedonyoungadultnovel': 'basedonbook', 'basedonshortstory': 'basedonbook',
     'basedonmemoirorautobiography': 'basedonbook', 'basedonmemoirortobiography': 'basedonbook',

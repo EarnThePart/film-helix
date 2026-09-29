@@ -101,6 +101,9 @@ def get_conn():
         if col not in existing:
             conn.execute(f"ALTER TABLE movies ADD COLUMN {col} TEXT")
             conn.commit()
+    if "tmdb_barren_attempts" not in existing:
+        conn.execute("ALTER TABLE movies ADD COLUMN tmdb_barren_attempts INTEGER")
+        conn.commit()
     for col in ("dtdd_status", "dtdd_checked_at"):
         if col not in existing:
             conn.execute(f"ALTER TABLE movies ADD COLUMN {col} TEXT")
@@ -154,6 +157,17 @@ TMDB_RECHECK_DAYS = 6  # cooldown before re-enriching an already-checked film
 #pre-2000) at 0.5s each — over two hours of guaranteed misses, every week.
 MAX_FETCH_ATTEMPTS = 3   # give up on a film after this many failed tries
 RECENT_YEARS = 2         # "current" window for routine re-attempts
+#TMDB answers for these films, it just has nothing to add: no keywords, no
+#runtime. The Phase 1 targeting clauses key off exactly those empty fields, so
+#the film re-qualifies every week forever — thousands of guaranteed-barren
+#fetches per run. Same non-convergence shape as the documentary loop in
+#helix_tagger.py and the RT re-scrape in Phase 4. Give up after this many
+#barren answers, then drop to a quarterly cadence instead of the weekly one.
+#Not a permanent give-up: TMDB is crowd-sourced, so a film CAN gain keywords
+#later, it just very rarely does for the regional cinema this mostly hits.
+#--retry-exhausted forces a full sweep anyway.
+MAX_TMDB_BARREN = 2
+BARREN_RECHECK_DAYS = 90
 #Release date is a poor predictor of whether a fetch will succeed; vote count is a
 #much better one. 12 Monkeys (1995, 683K votes) certainly has an RT page, a 1943
 #obscurity does not. Without this override, recency-gating silently abandoned
@@ -642,6 +656,161 @@ def _resolve_tconst_collisions(conn, dry_run):
     return released
 
 
+def _resolve_stolen_tconsts(conn, dry_run, basics_by_tconst, apply_fix=False):
+    """Resolve LATENT tconst collisions — a tconst held by the wrong film.
+
+    _resolve_tconst_collisions only fires when two or more rows claim the SAME
+    tconst. It cannot see the more common case: exactly one row holds the tconst,
+    so there is no collision to detect, but that row is not the film the tconst
+    describes. The rightful owner sits unlinked at 0 votes and is_valid=0, and is
+    therefore invisible to the app.
+
+    Confirmed example — tt15000156 is Firebrand (2023), the Katherine Parr /
+    Henry VIII film, 121 min, Drama,History, 6,888 votes:
+      id 1273309 "Firebrand" (an unrelated indie about a "blue-collar gearhead")
+        held tt15000156, inherited all 6,888 votes, and went is_valid=1 with NO
+        genres and NO keywords, so it matched nothing in the UI.
+      id 848439  "Firebrand" — the actual Katherine Parr film, correct overview,
+        Drama History Thriller — sat unlinked at 0 votes, invisible.
+
+    Detection is deliberately narrow to stay high-precision. A film is only
+    contested when it shows the SHELL signature: is_valid=1, holds a tconst, and
+    carries neither genres nor keywords. A real film that TMDB knows well always
+    has at least one of those, so a row with neither is almost never the film a
+    well-voted IMDb entry refers to. 153 rows matched this signature when the
+    check was written.
+
+    Resolution reuses the arbiter already proven in _resolve_tconst_collisions:
+    ask TMDB for each contender's OWN vote_count. The real film has thousands;
+    the shell has ~zero. Highest own-votes wins the tconst. The loser is released
+    with its true votes restored so validity re-settles honestly — never demoted,
+    per the one-tconst-one-film invariant.
+
+    Known gap (not handled here): a thief whose title differs from IMDb's only by
+    a distributor prefix. tt0499097 is "Without Remorse" on IMDb; the DB holds the
+    real film as "Tom Clancy's Without Remorse", which does not normalize to the
+    same key, while an unrelated 2021 Mandarin film titled exactly "Without
+    Remorse" does — and that thief has both genres and keywords, so it shows no
+    shell signature. Cases like that still need a manual correction.
+    """
+    suspects = conn.execute("""
+        SELECT id, title, release_date, tconst, vote_count
+        FROM movies
+        WHERE is_valid=1
+          AND tconst IS NOT NULL AND TRIM(tconst) != ''
+          AND TRIM(COALESCE(dna_genres,'')) = ''
+          AND TRIM(COALESCE(dna_keywords,'')) = ''
+    """).fetchall()
+
+    if not suspects:
+        log.info("  [STOLEN] no shell-signature rows holding a tconst")
+        return 0
+
+    #index unlinked rows by normalized IMDb-style title so a rightful owner can be
+    #found without a per-suspect table scan
+    unlinked = {}
+    for row in conn.execute("""
+        SELECT id, title, release_date, vote_count
+        FROM movies
+        WHERE (tconst IS NULL OR TRIM(tconst) = '')
+          AND title IS NOT NULL AND TRIM(title) != ''
+    """):
+        unlinked.setdefault(_normalize_title_for_match(row["title"]), []).append(row)
+
+    contests = []
+    for s in suspects:
+        entry = basics_by_tconst.get(str(s["tconst"]).strip())
+        if not entry:
+            continue
+        imdb_title, imdb_year = entry
+        try:
+            iy = int(imdb_year)
+        except (TypeError, ValueError):
+            continue
+        owners = []
+        for cand in unlinked.get(_normalize_title_for_match(imdb_title), []):
+            cy = str(cand["release_date"] or "")[:4]
+            #±1 year: TMDB release_date is often a festival or local date that
+            #straddles IMDb's startYear
+            if cy.isdigit() and abs(int(cy) - iy) <= 1:
+                owners.append(cand)
+        if owners:
+            contests.append((s, imdb_title, iy, owners))
+
+    if not contests:
+        log.info(f"  [STOLEN] {len(suspects):,} shell rows checked, no rightful owner found for any")
+        return 0
+
+    log.info(f"  [STOLEN] {len(contests):,} of {len(suspects):,} shell rows have a "
+             f"candidate rightful owner")
+    for s, imdb_title, iy, owners in contests[:10]:
+        log.warning(f"    [STOLEN] {s['tconst']} ('{imdb_title}' {iy}) held by "
+                    f"id={s['id']} '{s['title']}' [no genres/keywords] — "
+                    f"candidate owner(s): "
+                    + ", ".join(f"id={o['id']} '{o['title']}' ({str(o['release_date'] or '')[:4]})"
+                                for o in owners[:3]))
+
+    if dry_run or not apply_fix:
+        log.info(f"  [STOLEN] reporting only; re-run with --fix-stolen-tconsts to reassign")
+        return 0
+
+    #arbiter: each contender's OWN TMDB vote_count (same signal the collision
+    #resolver uses). A transient TMDB error defers the whole contest rather than
+    #risking a reassignment on missing data.
+    need = {s["id"] for s, _, _, _ in contests}
+    for _, _, _, owners in contests:
+        need.update(o["id"] for o in owners)
+    need = sorted(need)
+
+    tmdb_votes = {}
+    chunks = [need[i:i + TMDB_CHUNK] for i in range(0, len(need), TMDB_CHUNK)]
+    for i, chunk in enumerate(chunks, 1):
+        with ThreadPoolExecutor(max_workers=TMDB_WORKERS) as pool:
+            futs = {pool.submit(fetch_tmdb_metadata, fid): fid for fid in chunk}
+            for fut in as_completed(futs):
+                data, err = fut.result()
+                if err == "not_found":
+                    tmdb_votes[futs[fut]] = (0.0, 0.0)
+                elif not err and data:
+                    tmdb_votes[futs[fut]] = (float(data.get("vote_count") or 0),
+                                             float(data.get("vote_average") or 0))
+        if i % 10 == 0 or i == len(chunks):
+            log.info(f"    [STOLEN] chunk {i}/{len(chunks)} — {len(tmdb_votes):,} resolved")
+        if i < len(chunks):
+            time.sleep(TMDB_SLEEP)
+
+    reassigned = 0
+    deferred = 0
+    for s, imdb_title, iy, owners in contests:
+        members = [s] + owners
+        if any(m["id"] not in tmdb_votes for m in members):
+            deferred += 1
+            continue
+        winner = max(members, key=lambda m: tmdb_votes[m["id"]][0])
+        if winner["id"] == s["id"]:
+            continue  # holder defended it; leave everything alone
+        tconst = str(s["tconst"]).strip()
+        _warn_if_protected(tconst, winner["title"], "reassigning stolen tconst")
+        #holder gives up the tconst AND the votes it never earned
+        s_votes, s_avg = tmdb_votes[s["id"]]
+        conn.execute("""
+            UPDATE movies SET tconst=NULL, vote_count=?, vote_average=?,
+                   is_valid=CASE WHEN ? >= ? THEN 1 ELSE 0 END
+            WHERE id=?
+        """, (s_votes, s_avg, s_votes, VOTE_THRESHOLD, s["id"]))
+        #rightful owner takes the tconst; Phase 2's vote sync below restores the
+        #real IMDb vote_count and flips is_valid on the next pass
+        conn.execute("UPDATE movies SET tconst=? WHERE id=?", (tconst, winner["id"]))
+        reassigned += 1
+        log.info(f"    [STOLEN] {tconst} -> id={winner['id']} '{winner['title']}' "
+                 f"({tmdb_votes[winner['id']][0]:,.0f} TMDB votes); "
+                 f"released id={s['id']} '{s['title']}' ({s_votes:,.0f} own votes)")
+    conn.commit()
+    log.info(f"  [STOLEN] {reassigned:,} tconsts reassigned to their rightful film, "
+             f"{deferred:,} deferred (transient error only, retried next run)")
+    return reassigned
+
+
 def _build_linked_vote_index(conn):
     """vote_count -> [linked live rows], for variant-duplicate detection."""
     idx = {}
@@ -1046,10 +1215,20 @@ def run_blank_date_refetch(conn, dry_run, limit):
     return updated
 
 
-def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
+def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None, retry_exhausted=False):
     log.info("PHASE 1: TMDB enrichment")
     recheck_cutoff = (datetime.now(timezone.utc) - timedelta(days=TMDB_RECHECK_DAYS)).isoformat()
     params = [recheck_cutoff]
+    #a film TMDB has repeatedly had nothing to add for stops being re-fetched,
+    #unless it is a recent release whose data is still being filled in upstream
+    recent_cut = datetime.now(timezone.utc).year - RECENT_YEARS
+    barren_cutoff = (datetime.now(timezone.utc) - timedelta(days=BARREN_RECHECK_DAYS)).isoformat()
+    barren_clause = "" if retry_exhausted else f"""
+        AND (COALESCE(tmdb_barren_attempts, 0) < {MAX_TMDB_BARREN}
+             OR CAST(substr(release_date, 1, 4) AS INTEGER) >= {recent_cut}
+             OR last_tmdb_check IS NULL
+             OR last_tmdb_check < '{barren_cutoff}')
+    """
     votes_clause = ""
     if tmdb_min_votes is not None:
         votes_clause = "AND CAST(vote_count AS REAL) >= ?"
@@ -1070,6 +1249,7 @@ def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
             OR (is_valid = 1 AND (runtime IS NULL OR runtime = 0))
         )
         AND (last_tmdb_check IS NULL OR last_tmdb_check < ?)
+        {barren_clause}
         {votes_clause}
         ORDER BY CAST(vote_count AS REAL) DESC
     """, params).fetchall()
@@ -1079,6 +1259,7 @@ def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
 
     updated = 0
     errors  = 0
+    bad_runtimes = 0
     chunks  = [rows[i:i+TMDB_CHUNK] for i in range(0, len(rows), TMDB_CHUNK)]
 
     for chunk_idx, chunk in enumerate(chunks):
@@ -1109,7 +1290,17 @@ def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
             raw_rt   = data.get("runtime")
             if raw_rt is not None:
                 if raw_rt <= 1 or raw_rt > 600:
-                    log.warning(f"  [RUNTIME] Rejected bad runtime {raw_rt} for '{row['title']}'")
+                    #expected for films TMDB does not really cover (a lot of
+                    #regional cinema), so this is counted and summarized at the
+                    #end rather than logged per film — it was drowning out the
+                    #warnings that actually need attention.
+                    bad_runtimes += 1
+                    #year+id matter: generic titles ("Point Blank", "Devil") have
+                    #many entries, and a title-only line reads as though the famous
+                    #film is the one with the problem
+                    log.debug(f"  [RUNTIME] Rejected bad runtime {raw_rt} for "
+                              f"'{row['title']}' ({str(row['release_date'] or '????')[:4]}, "
+                              f"id={row['id']})")
                     raw_rt = None
             new_rt = raw_rt
             new_coll_id, new_coll_name = _collection_fields(data)
@@ -1149,6 +1340,23 @@ def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
                               new_vc, new_va, new_rt, new_coll_id, new_coll_name, tmdb_id))
                 updated += 1
 
+            #barren bookkeeping: a film only counts as barren when TMDB answered
+            #but still left it with the very emptiness that targets it here. Any
+            #real gain resets the counter so a film that later fills in upstream
+            #re-enters the normal cadence.
+            if not dry_run:
+                still_empty = (
+                    not (new_kw or (row["dna_keywords"] or "").strip())
+                    and new_rt is None
+                    and not (row["runtime"] or 0)
+                )
+                if still_empty:
+                    conn.execute("""UPDATE movies
+                                    SET tmdb_barren_attempts=COALESCE(tmdb_barren_attempts,0)+1
+                                    WHERE id=?""", (tmdb_id,))
+                elif changed:
+                    conn.execute("UPDATE movies SET tmdb_barren_attempts=0 WHERE id=?", (tmdb_id,))
+
         if not dry_run and checked_ids:
             now_iso = datetime.now(timezone.utc).isoformat()
             conn.executemany(
@@ -1163,7 +1371,16 @@ def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
         if chunk_idx < len(chunks) - 1:
             time.sleep(TMDB_SLEEP)
 
-    log.info(f"  TMDB: {updated} films updated, {errors} errors")
+    log.info(f"  TMDB: {updated} films updated, {errors} errors"
+             + (f", {bad_runtimes} bad runtimes rejected (TMDB has none for these)"
+                if bad_runtimes else ""))
+    if not dry_run:
+        given_up = conn.execute(
+            f"SELECT COUNT(*) FROM movies WHERE COALESCE(tmdb_barren_attempts,0) >= {MAX_TMDB_BARREN}"
+        ).fetchone()[0]
+        if given_up:
+            log.info(f"  TMDB: {given_up:,} films on the barren {BARREN_RECHECK_DAYS}-day cadence "
+                     f"({MAX_TMDB_BARREN}+ empty answers) — use --retry-exhausted to sweep them now")
     return updated
 
 
@@ -1199,12 +1416,14 @@ def _parse_imdb_basics(basics_raw):
     """Parse title.basics.tsv text.
 
     Returns:
-      basics_by_tconst: tconst -> (primaryTitle, startYear)
+      basics_by_tconst:  tconst -> (primaryTitle, startYear)
       basics_index:      (clean_title, startYear) -> tconst   (titleType='movie' only)
+      runtime_by_tconst: tconst -> runtimeMinutes or None
     """
     import html
     basics_by_tconst = {}
     basics_index = {}
+    runtime_by_tconst = {}
     for line in basics_raw.splitlines()[1:]:
         parts = line.split("\t")
         if len(parts) < 6:
@@ -1215,11 +1434,46 @@ def _parse_imdb_basics(basics_raw):
             continue
         if start_year == r"\N" or not start_year.isdigit():
             continue
+        #runtimeMinutes (col 8): TMDB returns 0 for a lot of regional cinema that
+        #IMDb does have a runtime for — 148 of the 155 valid films missing one.
+        runtime = parts[7].strip() if len(parts) > 7 else ""
+        runtime_by_tconst[tconst] = int(runtime) if runtime.isdigit() and 1 < int(runtime) <= 600 else None
         basics_by_tconst[tconst] = (primary_title, start_year)
         key = (_normalize_title_for_match(primary_title), start_year)
         if key not in basics_index:  # first hit wins; collisions are rare enough to ignore
             basics_index[key] = tconst
-    return basics_by_tconst, basics_index
+    return basics_by_tconst, basics_index, runtime_by_tconst
+
+
+def _backfill_runtimes_from_imdb(conn, dry_run, runtime_by_tconst):
+    """Fill runtime from IMDb for valid films TMDB has no runtime for.
+
+    Phase 1 rejects TMDB's runtime=0 rather than writing garbage, which is
+    correct, but it leaves the film with no runtime at all. IMDb's
+    title.basics.tsv is already downloaded and parsed for title sync and carries
+    runtimeMinutes, so the fix is free — no extra request. Coverage is thin on
+    TMDB mostly for regional cinema; IMDb had a runtime for 148 of the 155 valid
+    films missing one when this was added.
+    """
+    rows = conn.execute("""
+        SELECT id, title, tconst FROM movies
+        WHERE is_valid=1 AND tconst IS NOT NULL AND TRIM(tconst) != ''
+          AND (runtime IS NULL OR CAST(runtime AS REAL) <= 1)
+    """).fetchall()
+    fixes = [(runtime_by_tconst.get(str(r["tconst"]).strip()), r["id"]) for r in rows]
+    fixes = [(rt, fid) for rt, fid in fixes if rt]
+    if not fixes:
+        log.info("  [RUNTIME] no valid films need an IMDb runtime backfill")
+        return 0
+    log.info(f"  [RUNTIME] {len(fixes):,} of {len(rows):,} runtime-less valid films "
+             f"have one on IMDb")
+    if dry_run:
+        log.info("  [RUNTIME] dry-run, not writing")
+        return 0
+    conn.executemany("UPDATE movies SET runtime=? WHERE id=?", fixes)
+    conn.commit()
+    log.info(f"  [RUNTIME] {len(fixes):,} runtimes backfilled from IMDb")
+    return len(fixes)
 
 
 def _correct_dates_against_imdb(conn, dry_run, basics_by_tconst, min_gap=90):
@@ -1338,7 +1592,7 @@ def _link_missing_tconsts(conn, dry_run, basics_index, imdb_ratings):
 
 
 def run_imdb_updates(conn, dry_run, acquire=True, acquire_min_votes=10000,
-                     acquire_limit=1200):
+                     acquire_limit=1200, fix_stolen_tconsts=False):
     log.info("PHASE 2: IMDb updates")
     try:
         ratings_raw = _download_tsv_gz(IMDB_RATINGS_URL)
@@ -1357,15 +1611,29 @@ def run_imdb_updates(conn, dry_run, acquire=True, acquire_min_votes=10000,
 
     try:
         basics_raw = _download_tsv_gz(IMDB_BASICS_URL)
-        basics_by_tconst, basics_index = _parse_imdb_basics(basics_raw)
+        basics_by_tconst, basics_index, runtime_by_tconst = _parse_imdb_basics(basics_raw)
         log.info(f"  Loaded {len(basics_by_tconst):,} IMDb movie titles")
     except Exception as e:
         log.error(f"  Failed to download IMDb basics: {e} — skipping stub-link and title-sync")
-        basics_by_tconst, basics_index = {}, {}
+        basics_by_tconst, basics_index, runtime_by_tconst = {}, {}, {}
+
 
     #correct century-flipped dates before anything keys off release_date
     if basics_by_tconst:
         _correct_dates_against_imdb(conn, dry_run, basics_by_tconst)
+
+    #must precede linking and vote sync: a reassigned tconst needs the vote sync
+    #below to restore the rightful owner's real IMDb votes in the same run
+    if basics_by_tconst:
+        _resolve_stolen_tconsts(conn, dry_run, basics_by_tconst,
+                                apply_fix=fix_stolen_tconsts)
+
+    #strictly AFTER the stolen-tconst pass: this writes a runtime looked up by
+    #tconst, so running it first lands the real film's runtime on whichever row
+    #currently holds the tconst — which is exactly the row that pass is about to
+    #take it away from.
+    if runtime_by_tconst:
+        _backfill_runtimes_from_imdb(conn, dry_run, runtime_by_tconst)
 
     #acquisition runs here because the IMDb tables are already parsed and in memory.
     #It must come BEFORE linking/vote-sync so newly inserted films are picked up by
@@ -2669,6 +2937,7 @@ def main():
     ap.add_argument("--retry-exhausted", action="store_true", help=f"Also retry films that already failed {MAX_FETCH_ATTEMPTS}+ times (normally given up on permanently)")
     ap.add_argument("--skip-acquire",   action="store_true", help="Skip Phase 1b — do not insert new films missing from the DB")
     ap.add_argument("--fix-wiki-mismatches", action="store_true", help="In Phase 0, NULL any wiki_plot whose source article title does not match the film, so it is re-fetched (default: report only)")
+    ap.add_argument("--fix-stolen-tconsts", action="store_true", help="In Phase 2, reassign a tconst held by a data-empty shell row to the film that actually matches its IMDb title+year (default: report only)")
     ap.add_argument("--skip-categories", action="store_true", help="Skip Phase 3a — Wikipedia categories -> category_tags")
     ap.add_argument("--category-backfill-limit", type=int, default=60, help="Max films for the Phase 3a disambiguation backfill per run (default: 60). It sleeps 4-5s per film, so this bounds it to ~5 min; it is resumable and drains over successive runs.")
     ap.add_argument("--skip-category-backfill", action="store_true", help="Skip Phase 3a's Phase B disambiguation backfill entirely")
@@ -2758,7 +3027,8 @@ def main():
     #TMDB
     tmdb_updated = 0
     if not args.skip_tmdb:
-        tmdb_updated = run_tmdb_enrichment(conn, args.dry_run, tmdb_min_votes=args.tmdb_min_votes)
+        tmdb_updated = run_tmdb_enrichment(conn, args.dry_run, tmdb_min_votes=args.tmdb_min_votes,
+                                           retry_exhausted=args.retry_exhausted)
         if tmdb_updated > 0:
             content_changed = True
     else:
@@ -2772,6 +3042,7 @@ def main():
             acquire=not args.skip_acquire,
             acquire_min_votes=args.acquire_min_votes,
             acquire_limit=args.acquire_limit,
+            fix_stolen_tconsts=args.fix_stolen_tconsts,
         )
         if imdb_updated > 0:
             content_changed = True
