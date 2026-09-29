@@ -409,6 +409,42 @@ What actually needs building:
   different, so wiki_semantic chunking likely needs its own handling.
 - Add a `media_type` column, a UI toggle, and recommender filtering on it.
 
+### Future: exact remake/sequel relationships (not started, 2026-09-07)
+`exclude_sequels` was made franchise-aware via TMDB `belongs_to_collection` (see
+below) for true sequels, but REMAKES still use a blunt keyword check with no
+source-specific relationship — same class of bug the collection fix solved for
+sequels, just unsolved for remakes.
+
+Verified feasible: Wikipedia's `{{Based on}}` infobox template names the exact
+source film as a wikilink in most cases (The Departed -> Infernal Affairs,
+Insomnia 2002 -> Insomnia 1997, Vanilla Sky -> Open Your Eyes, House on Haunted
+Hill 1999 -> the 1959 original). The wikilink target is a precise Wikipedia
+article title, resolvable through Wikidata to an exact IMDb tconst (same P345
+lookup already used elsewhere) — zero fuzzy title-matching, sidestepping the
+whole class of collision bugs fixed in the wiki_plot guard work above. Category
+tree to enumerate: `Category:Film remakes by country of original film` (~1,500-
+2,000 pages across all countries) and `Category:American_sequel_films` for the
+sequel side. Caveats found during the feasibility check: the infobox template
+format is not fully consistent (found a second `{{Plainlist|...}}` shape mixed
+in), and "Based on" sometimes points to a source NOVEL rather than an earlier
+film, so the parser must disambiguate that. A dedicated fan/wiki site with a
+cleaner structured franchise list might be a better primary source than parsing
+Wikipedia infoboxes, or a good cross-check against it — worth evaluating both.
+
+**This is more than an exclusion fix — it's a ground-truth override, not just a
+filter.** Right now Infernal Affairs -> The Departed #1 only works because
+keywords and helix tags were hand-tuned until similarity math happened to land
+there. A confirmed remake-of/sequel-of pair does not need that: with the
+exclude toggle OFF, a known pair could be force-ranked to the top regardless of
+computed similarity, because it stops being a similarity claim and becomes a
+fact. Design for both directions from one relationship column/table — exclude
+when the toggle is on, guarantee-rank when it is off — rather than treating this
+as only an exclusion patch.
+
+Sequencing: wait for the collection-ID backfill (dna_collection_id, see below)
+to finish and be verified before starting this — do not run concurrent
+multi-hour data pipelines.
+
 ### Search box ordering (known limitation, 2026-09-05)
 `_ordered_titles` IS sorted by vote_count DESC, but `st.selectbox` re-ranks matches
 client-side by string-match quality, so typing "spider" surfaces Spider (2002,

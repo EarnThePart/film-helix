@@ -97,6 +97,10 @@ def get_conn():
             conn.commit()
     #attempt counters. A flat 30-day cooldown still retries a hopeless film forever;
     #these let a fetch give up for good after MAX_FETCH_ATTEMPTS.
+    for col in ("dna_collection_id", "dna_collection_name"):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE movies ADD COLUMN {col} TEXT")
+            conn.commit()
     for col in ("dtdd_status", "dtdd_checked_at"):
         if col not in existing:
             conn.execute(f"ALTER TABLE movies ADD COLUMN {col} TEXT")
@@ -339,10 +343,13 @@ def run_acquire_new_films(conn, dry_run, imdb_ratings, basics_by_tconst,
                 #fuzzy match, which is what created the collisions in the first place.
                 if tmdb_id in existing_ids:
                     _warn_if_protected(tconst, data.get("title"), "exact-linking existing row")
+                    coll_id, coll_name = _collection_fields(data)
                     conn.execute("""
-                        UPDATE movies SET tconst=?, vote_count=?, vote_average=?
+                        UPDATE movies SET tconst=?, vote_count=?, vote_average=?,
+                               dna_collection_id=COALESCE(dna_collection_id, ?),
+                               dna_collection_name=COALESCE(dna_collection_name, ?)
                         WHERE id=? AND (tconst IS NULL OR TRIM(tconst)='')
-                    """, (tconst, imdb_votes, imdb_ratings[tconst][0], tmdb_id))
+                    """, (tconst, imdb_votes, imdb_ratings[tconst][0], coll_id, coll_name, tmdb_id))
                     have.add(tconst)
                     linked += 1
                     if linked <= 10:
@@ -359,12 +366,14 @@ def run_acquire_new_films(conn, dry_run, imdb_ratings, basics_by_tconst,
                     runtime = None
                 credits = data.get("credits") or {}
                 avg = imdb_ratings[tconst][0]
+                coll_id, coll_name = _collection_fields(data)
                 conn.execute("""
                     INSERT INTO movies
                       (id, title, original_title, release_date, runtime, overview,
                        dna_keywords, dna_genres, dna_cast, dna_director, dna_writer,
-                       vote_average, vote_count, tconst, is_valid, validated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       vote_average, vote_count, tconst, is_valid, validated_at,
+                       dna_collection_id, dna_collection_name)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     tmdb_id, data.get("title") or basics_by_tconst[tconst][0],
                     data.get("original_title") or "", rel, runtime,
@@ -376,6 +385,7 @@ def run_acquire_new_films(conn, dry_run, imdb_ratings, basics_by_tconst,
                     avg, imdb_votes, tconst,
                     1 if imdb_votes >= VOTE_THRESHOLD else 0,
                     datetime.now(timezone.utc).isoformat(),
+                    coll_id, coll_name,
                 ))
                 existing_ids.add(tmdb_id)
                 have.add(tconst)
@@ -393,6 +403,28 @@ def run_acquire_new_films(conn, dry_run, imdb_ratings, basics_by_tconst,
     log.info(f"  [ACQUIRE] {inserted:,} new films inserted, {linked:,} existing rows "
              f"exact-linked, {skipped:,} skipped, {errors:,} errors")
     return inserted + linked
+
+
+def _collection_fields(data):
+    """Extract TMDB's own franchise grouping — free, already present on every
+    /movie/{id} response this pipeline makes, just never stored.
+
+    Verified against real TMDB data 2026-09-07 before relying on it: reliable for
+    true sequel franchises including obscure/direct-to-video ones (Sharknado, Jaws,
+    Train to Busan), and it correctly does NOT merge shared-universe crossovers
+    (Thor and The Avengers are separate collections) — so this can safely replace
+    blanket sequel/prequel exclusion without over-excluding a whole cinematic
+    universe. It does NOT cover unofficial/thematic trilogies (Park Chan-wook's
+    Vengeance trilogy has no shared collection), title-changed spin-offs (Ballerina
+    is not linked to John Wick), or cross-era remakes under the same title (the
+    2026 live-action Moana is not linked to the 2016 animated one). Those gaps are
+    not a regression: the keyword-based remake/reboot check this replaces never
+    caught them either.
+    """
+    coll = (data or {}).get("belongs_to_collection")
+    if not coll:
+        return None, None
+    return str(coll.get("id") or "") or None, coll.get("name")
 
 
 def _keywords_str(data):
@@ -1023,7 +1055,8 @@ def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
         votes_clause = "AND CAST(vote_count AS REAL) >= ?"
         params.append(tmdb_min_votes)
     rows = conn.execute(f"""
-        SELECT id, title, release_date, vote_count, dna_keywords, dna_genres, runtime, tconst
+        SELECT id, title, release_date, vote_count, dna_keywords, dna_genres, runtime, tconst,
+               dna_collection_id
         FROM movies
         WHERE (
             (release_date LIKE '2024%' OR release_date LIKE '2025%' OR release_date LIKE '2026%') AND CAST(vote_count AS REAL) >= 1000
@@ -1079,6 +1112,7 @@ def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
                     log.warning(f"  [RUNTIME] Rejected bad runtime {raw_rt} for '{row['title']}'")
                     raw_rt = None
             new_rt = raw_rt
+            new_coll_id, new_coll_name = _collection_fields(data)
 
             #IMDb is the authoritative vote source once a tconst is linked (Phase 2
             #syncs it from the real IMDb TSV). TMDB's own vote_count is typically far
@@ -1090,26 +1124,29 @@ def run_tmdb_enrichment(conn, dry_run, tmdb_min_votes=None):
                 new_kw  != (row["dna_keywords"] or "") or
                 new_gen != (row["dna_genres"]   or "") or
                 (not has_tconst and abs(new_vc - float(row["vote_count"] or 0)) > 1) or
-                (new_rt is not None and new_rt != row["runtime"])
+                (new_rt is not None and new_rt != row["runtime"]) or
+                (new_coll_id or "") != (row["dna_collection_id"] or "")
             )
             if changed:
                 if not dry_run:
                     if has_tconst:
                         conn.execute("""
                             UPDATE movies
-                            SET dna_keywords=?, dna_genres=?, runtime=?
+                            SET dna_keywords=?, dna_genres=?, runtime=?,
+                                dna_collection_id=?, dna_collection_name=?
                             WHERE id=?
                         """, (new_kw or row["dna_keywords"],
                               new_gen or row["dna_genres"],
-                              new_rt, tmdb_id))
+                              new_rt, new_coll_id, new_coll_name, tmdb_id))
                     else:
                         conn.execute("""
                             UPDATE movies
-                            SET dna_keywords=?, dna_genres=?, vote_count=?, vote_average=?, runtime=?
+                            SET dna_keywords=?, dna_genres=?, vote_count=?, vote_average=?, runtime=?,
+                                dna_collection_id=?, dna_collection_name=?
                             WHERE id=?
                         """, (new_kw or row["dna_keywords"],
                               new_gen or row["dna_genres"],
-                              new_vc, new_va, new_rt, tmdb_id))
+                              new_vc, new_va, new_rt, new_coll_id, new_coll_name, tmdb_id))
                 updated += 1
 
         if not dry_run and checked_ids:

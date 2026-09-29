@@ -57,6 +57,7 @@ PRICE_OUTPUT      = 4.00
 PRICE_CACHE_WRITE = 1.00
 PRICE_CACHE_READ  = 0.08
 
+MAX_TAG_ATTEMPTS       = 2   # give up after this many genuinely-empty results
 EXPECTED_COST_PER_FILM = 0.0045
 VELOCITY_WINDOW        = 50
 VELOCITY_CEILING       = 0.008
@@ -147,6 +148,7 @@ def ensure_columns(conn):
         ("helix_dom",            "TEXT"),
         ("helix_sty",            "TEXT"),
         ("helix_low_confidence", "INTEGER"),
+        ("helix_attempts",       "INTEGER"),
     ]:
         if col not in cols:
             conn.execute(f"ALTER TABLE movies ADD COLUMN {col} {dtype}")
@@ -461,6 +463,10 @@ def main():
                              "re-enter the queue forever, costing money each run without converging.")
     parser.add_argument("--min-votes",      type=int,   default=2000,
                         help="Min IMDb vote_count for normal-queue targeting (default: 2000)")
+    parser.add_argument("--retry-exhausted", action="store_true",
+                        help=f"Also retry films that already returned empty {MAX_TAG_ATTEMPTS}+ times "
+                             "(normally given up on — same non-convergence problem as documentaries, "
+                             "just for anthology/sketch films with no single throughline protagonist)")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -528,6 +534,16 @@ def main():
         #Use --include-documentaries to override.
         doc_clause = "" if args.include_documentaries else \
             "AND (dna_genres IS NULL OR dna_genres NOT LIKE '%Documentary%')"
+        #Attempt cap. Without this, a film the model correctly and repeatedly
+        #returns mostly-empty for (anthologies/sketch films: Monty Python's the
+        #Meaning of Life, Movie 43, Paris Je T'aime — no single throughline
+        #protagonist or domain, same root cause as the documentary problem above)
+        #satisfies empty_field_count>=3 forever and gets re-tagged and re-billed
+        #on every run with no cap. Verified 2026-09-07: 347 films were genuinely
+        #processed and correctly returned empty, all still eligible for re-queue
+        #before this existed. Use --retry-exhausted to override.
+        attempts_clause = "" if args.retry_exhausted else \
+            f"AND COALESCE(helix_attempts, 0) < {MAX_TAG_ATTEMPTS}"
         rows = conn.execute(f"""
             SELECT id, title, release_date, vote_count, wiki_plot, wiki_title, overview
             FROM movies
@@ -535,6 +551,7 @@ def main():
               AND overview IS NOT NULL AND overview != ''
               AND {empty_field_count} >= 3
               {doc_clause}
+              {attempts_clause}
               AND CAST(vote_count AS REAL) >= ?
             ORDER BY {order}
         """, (args.min_votes,)).fetchall()
@@ -611,6 +628,8 @@ def main():
 
         if response.usage.output_tokens > 1500:
             log_error(tmdb_id, title, f"Anomalous output: {response.usage.output_tokens} tokens. Skipping.")
+            conn.execute("UPDATE movies SET helix_attempts=COALESCE(helix_attempts,0)+1 WHERE id=?", (tmdb_id,))
+            conn.commit()
             if not ids_mode:
                 save_checkpoint(tmdb_id, checkpoint)
             time.sleep(SLEEP_BETWEEN)
@@ -622,6 +641,8 @@ def main():
 
         if parsed is None:
             errors += 1
+            conn.execute("UPDATE movies SET helix_attempts=COALESCE(helix_attempts,0)+1 WHERE id=?", (tmdb_id,))
+            conn.commit()
             if not ids_mode:
                 save_checkpoint(tmdb_id, checkpoint)
             time.sleep(SLEEP_BETWEEN)
@@ -632,7 +653,8 @@ def main():
                 helix_pro=?, helix_dyn=?, helix_thm=?,
                 helix_str=?, helix_ton=?, helix_spl=?,
                 helix_dom=?, helix_sty=?,
-                helix_low_confidence=?
+                helix_low_confidence=?,
+                helix_attempts=COALESCE(helix_attempts, 0) + 1
             WHERE id=?
         """, (
             parsed["helix_pro"], parsed["helix_dyn"], parsed["helix_thm"],

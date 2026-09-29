@@ -17,6 +17,17 @@ EMBEDDINGS_CACHE         = 'semantic_embeddings_cache.npy'
 WIKI_EMBEDDINGS_CACHE    = 'wiki_semantic_embeddings_cache.npy'
 
 META_KEYWORD_STOPWORDS = {
+    #TODO(review): 'absurd'/'absurdist' burned 2026-09-07 — TMDB's crowd-sourced
+    #tagging under this token is not coherent under any definition tested (random
+    #sample: What's Love Got to Do with It, Marley & Me, Flight of the Phoenix,
+    #Con Air — no throughline, not farce, not Camus-style absurdism). It was ALSO
+    #incorrectly normalized to 'surreal' (KEYWORD_NORMALIZATIONS) and listed
+    #directly in MOOD_KEYWORDS, so it was corrupting both the plot-keyword
+    #scoring channel and Style & Tone display for 302 films (e.g. My Cousin
+    #Vinny, Crocodile Dundee, North by Northwest showing "Surreal"). There ARE
+    #legitimate absurdist films in the catalog; if this tag is ever revisited,
+    #it needs its own clean definition rather than reusing TMDB's noisy token.
+    'absurd', 'absurdist',
     'basedonshortfilm', 'basedonnovel', 'basedonbook', 'basedontruestory',
     'basedonplay', 'basedoncomicbook', 'basedoncomicseries', 'basedonscreenplay',
     'basedonnovelorbook', 'basedonnovella', 'basedonchildren', 'basedonwebseries',
@@ -77,7 +88,7 @@ MOOD_KEYWORDS = {
     'introspective', 'provocative', 'serene', 'hilarious', 'cheerful', 'loving',
     'sardonic', 'callous', 'grim',
     'clinical', 'antagonistic', 'inspiring', 'inspirational', 'steamy',
-    'risque', 'affectation', 'curious', 'absurdist', 'absurd',
+    'risque', 'affectation', 'curious',
 }
 
 #define genres for cross-contamination blocking unless overwhelming shared DNA
@@ -185,8 +196,8 @@ KEYWORD_NORMALIZATIONS = {
     'basedonnovelorbook': 'basedonbook',
     #comic/manga
     'basedoncomic': 'basedoncomic', 'basedonmanga': 'basedoncomic',
-    #surreal
-    'absurd': 'surreal', 'surrealism': 'surreal',
+    #surreal — 'absurd' removed 2026-09-07, see META_KEYWORD_STOPWORDS note
+    'surrealism': 'surreal',
     #director
     'womandirector': 'femaledirector',
     #time
@@ -909,14 +920,41 @@ class FilmHelixEngine:
             final_scores[obscure_mask & ~title_match] = 0.0
 
         if exclude_sequels:
+            #Franchise-aware as of 2026-09-07. The old version zeroed out any
+            #candidate whose OWN keywords merely contained "sequel" etc., with no
+            #regard for the source film — so searching Colony (2026, a standalone
+            #Yeon Sang-ho film) zeroed out Peninsula purely because Peninsula is a
+            #sequel to a DIFFERENT film (Train to Busan), despite Peninsula
+            #actually scoring higher than Train to Busan on keywords, wiki plot
+            #and category tags for that search.
+            #
+            #TMDB's own collection grouping (verified against real data first, see
+            #_collection_fields in weekly_refresh.py) reliably covers true sequel
+            #franchises including obscure/direct-to-video ones (Sharknado, Jaws),
+            #and correctly does NOT merge shared-universe crossovers (Thor and The
+            #Avengers are separate collections) — so this can safely exclude
+            #"other entries in the source's own franchise" without also nuking an
+            #entire cinematic universe. It does not catch unofficial trilogies,
+            #retitled spin-offs, or cross-era remakes, but the keyword check below
+            #never did either — this is strictly additive, not a regression.
+            src_coll = str(self.df.iloc[idx].get('dna_collection_id', '') or '').strip()
+            if src_coll:
+                same_franchise = (
+                    self.df['dna_collection_id'].astype(str).str.strip() == src_coll
+                )
+                final_scores[same_franchise] = 0.0
+
+            #Remake/reboot has no ID-based signal to key off (TMDB does not link a
+            #remake to its original the way it links sequels via collection), so
+            #this stays a blunt, source-independent keyword check — unchanged from
+            #before, just narrowed to drop the collection-covered "sequel"/
+            #"prequel" cases above.
             kw_lower = self.df['dna_keywords'].str.lower()
-            seq_mask = (
-                kw_lower.str.contains(r'\bsequel\b', na=False) |
-                kw_lower.str.contains(r'\bprequel\b', na=False) |
+            remake_mask = (
                 kw_lower.str.contains(r'\bremake\b', na=False) |
                 kw_lower.str.contains(r'\breboot\b', na=False)
             )
-            final_scores[seq_mask] = 0.0
+            final_scores[remake_mask] = 0.0
 
         #hard keyword floor: zero out results with near-zero keyword overlap, prevents matches from single incidental keywrod
         #only veto if BOTH keywords and semantic plot overlap are garbage
