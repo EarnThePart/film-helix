@@ -1591,7 +1591,7 @@ def _link_missing_tconsts(conn, dry_run, basics_index, imdb_ratings):
     return linked
 
 
-def run_imdb_updates(conn, dry_run, acquire=True, acquire_min_votes=10000,
+def run_imdb_updates(conn, dry_run, acquire=True, acquire_min_votes=5000,
                      acquire_limit=1200, fix_stolen_tconsts=False):
     log.info("PHASE 2: IMDb updates")
     try:
@@ -2942,7 +2942,7 @@ def main():
     ap.add_argument("--category-backfill-limit", type=int, default=60, help="Max films for the Phase 3a disambiguation backfill per run (default: 60). It sleeps 4-5s per film, so this bounds it to ~5 min; it is resumable and drains over successive runs.")
     ap.add_argument("--skip-category-backfill", action="store_true", help="Skip Phase 3a's Phase B disambiguation backfill entirely")
     ap.add_argument("--category-min-votes", type=int, default=10000, help="Min vote_count for the Phase 3a Wikipedia category fetch (default: 10000)")
-    ap.add_argument("--acquire-min-votes", type=int, default=10000, help="Min IMDb votes for a missing film to be acquired (default: 10000)")
+    ap.add_argument("--acquire-min-votes", type=int, default=5000, help="Min IMDb votes for a missing film to be acquired (default: 5000). Lowered from 10000 on 2026-09-29: is_valid only needs 1,000 votes, so the old gap left wide-release theatrical films (Heart of the Beast 8,973, Primetime 6,914) invisible until hand-forced.")
     ap.add_argument("--acquire-limit",  type=int, default=1200, help="Max films to reconcile (insert or exact-link) per run, highest IMDb vote count first (default: 1200 — enough to clear the current ~894 backlog in one run)")
     ap.add_argument("--skip-tmdb",  action="store_true", help="Skip TMDB enrichment")
     ap.add_argument("--skip-blank-date-refetch", action="store_true", help="Skip the blank-release_date stub re-fetch pre-pass")
