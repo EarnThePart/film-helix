@@ -159,6 +159,15 @@ Everything else the app needs is in the one command.
 Useful flags: --dry-run, --skip-integrity, --skip-acquire, --skip-tmdb, --skip-wiki,
 --skip-cache, --all-years, --retry-exhausted, --acquire-min-votes N, --acquire-limit N
 
+### Phase 1b acquisition threshold is 5,000 votes (lowered 2026-09-29)
+Was 10,000. `is_valid` only needs 1,000 votes, and that gap made any film between
+1K and 10K invisible — it was never acquired, so it could never be promoted. Two
+wide-release theatrical films had to be forced in by hand to find this: Heart of
+the Beast (David Ayer, 8,973 votes) and Primetime (A24/Lance Oppenheim, 6,914).
+Both already existed in movies.db as unlinked, blank-date rows.
+If a film "should obviously be there" and isn't, check whether it sits under the
+acquisition threshold before assuming a bug.
+
 ### Phase 1b acquisition — why it is tconst-first
 Resolves each missing IMDb id through TMDB `/find/{imdb_id}`, giving an EXACT
 imdb->tmdb mapping, then:
@@ -186,6 +195,21 @@ Any change to the valid set invalidates them. recommender.py:633 checks
 `cached.shape[0] == n` and raises rather than silently mis-scoring, so a stale cache
 means the app refuses to start. Phase 5 rebuilds automatically whenever content
 changed; after any manual is_valid edit, re-run with --force-rebuild.
+
+**The shape guard does NOT catch a net-zero is_valid swap (found 2026-09-29).**
+It compares row COUNT only. Promoting one film while demoting another leaves the
+count identical, so the check PASSES while every row at/after the changed position
+is shifted by one — the app starts normally and silently mis-scores. This is
+exactly what the Without Remorse fix did (promoted id 567189, demoted id 1280790,
+41,684 both before and after). Caches were rebuilt manually; nothing would have
+flagged it otherwise.
+Rule: rebuild after ANY is_valid edit, even one that nets to zero. A real fix would
+store a fingerprint (e.g. hash of the ordered id list) alongside the cache and
+compare that instead of the count.
+Also note wiki_plot text feeds wiki_semantic_embeddings_cache.npy, so a wiki plot
+fetch invalidates the cache too — sequence plot fetches BEFORE the rebuild or you
+pay for the ~25-minute wiki encode twice. Helix tags do NOT affect either cache
+(they feed IDF-cosine channels built at load time), so tagging never needs a rebuild.
 
 ### Adding New Films to the DB
 1. python fetch_missing_by_imdb_id.py   — finds films with 10K+ IMDb votes missing from DB, fetches via TMDB
@@ -522,16 +546,21 @@ It costs money per film. The user wants to run it separately and watch it, so pa
 steps stay manual while free/deterministic ones are automated. Do not add any Claude-API
 tagger to the weekly run — not even behind a default-off flag — unless asked.
 
-### Prompt Caching Blocker (unresolved as of 2026-04-27)
-cache_creation_input_tokens returns 0 on every call with claude-haiku-4-5.
-Root cause: claude-haiku-4-5 requires a 4,096-token minimum for prompt caching.
-Current system prompt is ~2,407 tokens — below the threshold.
-Options:
-  1. Pad system prompt to 4,096+ tokens by adding more annotated examples (preferred — also improves quality)
-  2. Accept no caching and run at full price (~$90–100 total for 33K films)
-CostTracker.record() already has defensive fallback reading both old flat field
-(cache_creation_input_tokens) and new nested field (usage.cache_creation.ephemeral_5m_input_tokens).
-helix_mini_tagger.py has the same fix applied.
+### Prompt Caching Blocker — RESOLVED (verified 2026-09-29)
+Caching works. A 49-film run reported **48/49 cache hits** and cost $0.1192 total
+(~$0.0024/film, roughly half the $0.0045 estimate). Do NOT re-investigate this or
+pad the system prompt; the section below is kept only as a record of what the old
+symptom looked like.
+
+Historical (2026-04-27): cache_creation_input_tokens returned 0 on every call with
+claude-haiku-4-5; the diagnosis at the time was that the model requires a
+4,096-token minimum and the system prompt was ~2,407 tokens. Whatever the real
+cause, it no longer reproduces.
+
+CostTracker.record() has a defensive fallback reading both the old flat field
+(cache_creation_input_tokens) and the new nested field
+(usage.cache_creation.ephemeral_5m_input_tokens). helix_mini_tagger.py has the
+same fix applied.
 
 ## Test Protocol
 Run headless: python test_engine.py
