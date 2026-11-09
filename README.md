@@ -8,7 +8,7 @@ FilmHelix is a film recommendation platform that addresses a problem I've often 
 
 FilmHelix operates on the same principles as Pandora's Music Genome Project. Instead of behavioral data ("users who listened to X also listened to Y"), it analyzes the intrinsic properties of the film itself to find films with shared DNA. A traditional movie recommendation engine might observe that the user loved *Nightcrawler* (2014) and recommend *Drive* (2011) and *Prisoners* (2012) for them to watch next. The engine's results are defensible, as these films are also acclaimed crime thrillers with a neo-noir atmosphere. However, FilmHelix goes deeper. The algorithm analyzes the narrative DNA of *Nightcrawler* and seeks to provide the film that shares the most genes, producing matches such as *Ace in the Hole* (1951) and *Shattered Glass* (2003), surfacing films that are also character studies of manipulative journalists with questionable ethics.
 
-The FilmHelix database houses approximately 43,000 valid films, filtered by IMDb popularity from a starting list of 863,000 films. Its engine uses a 17-channel weighted similarity architecture combining TF-IDF keyword matching, sentence-transformer semantic embeddings, Wikipedia plot analysis, and a custom-built cinematic taxonomy. The taxonomy established a framework for mapping each film's narrative genome across eight dimensions: protagonist archetype, dramatic structure, mood/atmosphere, setting, theme(s), core dramatic dynamic, cinematic style, and narrative resolution (this last dimension is tagged in the data but not yet wired into live scoring — see below).
+The FilmHelix database houses approximately 43,000 valid films, filtered by IMDb popularity from a starting list of 863,000 films. Its engine uses a 17-channel weighted similarity architecture combining TF-IDF keyword matching, sentence-transformer semantic embeddings, Wikipedia plot analysis, and a custom-built cinematic taxonomy. The taxonomy established a framework for mapping each film's narrative genome across eight dimensions: protagonist archetype, dramatic structure, mood/atmosphere, setting, theme(s), core dramatic dynamic, cinematic style, and narrative resolution (this last dimension is tagged in the data but not yet wired into live scoring - see below).
 
 ---
 
@@ -44,11 +44,11 @@ Each film receives tags across eight dimensions, seven of which currently feed l
 
 ### IDF-Weighted Helix Scoring
 
-A key architectural decision: helix tags are scored using IDF weighting rather than raw overlap counts. This means rare tags carry more signal than common ones — but on a logarithmic scale, which compresses rather than amplifies the raw frequency gap (see the worked example below).
+A key architectural decision: helix tags are scored using IDF weighting rather than raw overlap counts. This means rare tags carry more signal than common ones - but on a logarithmic scale, which compresses rather than amplifies the raw frequency gap (see the worked example below).
 
-For example: `obsessed_artist` appears in only 17 films. `reluctant_hero` appears in 10,191. Without IDF weighting, both tags contribute equally to a match score. As a result, *Interstellar* as the source film would match *Indiana Jones* above *Arrival* because they share the generic `reluctant_hero + quest_narrative` archetypes. With log-scaled IDF weighting, sharing `obsessed_artist` between *Whiplash* and *Black Swan* is correctly worth roughly 5x more than sharing `reluctant_hero` — a rare, specific signal is treated as meaningfully stronger evidence than a common, generic one, even though log-scaling deliberately keeps the raw 600:1 frequency gap from swinging the score by 600x.
+For example: `obsessed_artist` appears in only 17 films. `reluctant_hero` appears in 10,191. Without IDF weighting, both tags contribute equally to a match score. As a result, *Interstellar* as the source film would match *Indiana Jones* above *Arrival* because they share the generic `reluctant_hero + quest_narrative` archetypes. With log-scaled IDF weighting, sharing `obsessed_artist` between *Whiplash* and *Black Swan* is correctly worth roughly 5x more than sharing `reluctant_hero` - a rare, specific signal is treated as meaningfully stronger evidence than a common, generic one, even though log-scaling deliberately keeps the raw 600:1 frequency gap from swinging the score by 600x.
 
-The formula: `IDF = log(N / (1 + df))`, computed across the 7 helix columns currently wired into scoring (`helix_spl` is excluded — see above). Vectors are L2-normalized, so cosine similarity remains well-defined.
+The formula: `IDF = log(N / (1 + df))`, computed across the 7 helix columns currently wired into scoring (`helix_spl` is excluded - see above). Vectors are L2-normalized, so cosine similarity remains well-defined.
 
 ---
 
@@ -99,15 +99,15 @@ To prevent a single incidental shared tag from dominating a match, diversity mul
 
 Two layers, gating on different sides of the match:
 
-**Base gate** — applies to every candidate uniformly, set by what genre the *source* film is:
+**Base gate** - applies to every candidate uniformly, set by what genre the *source* film is:
 - Standard: 0.20
 - Source is Comedy, Animation, Documentary, or Romance ("strict" genres): 0.35
 - Source is a true musical (Music genre + a literal "musical" keyword, to exclude jazz dramas/band comedies that only carry the broader Music genre tag): 0.45
 
-**Cross-contamination floors** — an *additional*, stricter bar a candidate must separately clear if it carries one of these genres and the source doesn't, so a genre-typical candidate can't sneak in on generic plot similarity alone:
+**Cross-contamination floors** - an *additional*, stricter bar a candidate must separately clear if it carries one of these genres and the source doesn't, so a genre-typical candidate can't sneak in on generic plot similarity alone:
 - Candidate is a documentary and source isn't: excluded entirely, no exception
 - Candidate is Comedy and source's primary genre isn't Comedy: 0.60
-- Candidate is Animation/Family and source isn't Animation/Family: 0.70 — e.g. the slapstick comedy *Caddyshack* (1980) sharing "class warfare" with *Parasite* (2019) isn't enough on its own to surface an animated match against a live-action source
+- Candidate is Animation/Family and source isn't Animation/Family: 0.70 - e.g. the slapstick comedy *Caddyshack* (1980) sharing "class warfare" with *Parasite* (2019) isn't enough on its own to surface an animated match against a live-action source
 - Candidate is a true musical and source isn't: 0.50
 
 So Animation's two numbers aren't a contradiction: 0.35 is what applies when you search *for* an animated film (every candidate needs to clear it); 0.70 is the much higher bar an animated candidate must separately clear when the source isn't animated at all.
@@ -235,7 +235,7 @@ python -c "import weekly_refresh; weekly_refresh.run_cache_rebuild(dry_run=False
 
 **Metadata fragmentation**  Because TMDB relies on crowd-sourced tagging, inconsistencies are inevitable. FilmHelix employs a keyword normalization map (e.g. "ship"/"boat"/"yacht" combine to form the singular keyword "boat") to consolidate variants, but some minor fragmentation remains.
 
-**LLM tagger bias toward modal categories**  Measuring my own tagger's output distribution surfaced a real skew: the modal tag on several helix dimensions covers a large share of tagged films, most notably `helix_pro` (protagonist archetype), where `reluctant_hero` alone accounts for 40.1% of the 25,496 films tagged on that dimension. `helix_str` (narrative structure) shows the same pattern — `character_study` covers 40.0%. `helix_sty` (cinematic style) was the most extreme: `style_classical_invisible` covered 75.7%. This is the classic LLM-tagging failure mode — when uncertain, the model defaults to the most generic available category. IDF weighting (above) is the general mitigation for `helix_pro` and `helix_str`, where the skew, while real, still leaves room for other values to carry signal. `helix_sty` crossed a different line: at 75.7% coverage, `style_classical_invisible` wasn't signaling "this film has a classical, invisible style" so much as "the tagger had nothing distinctive to say" — the UI's explainability layer had already independently flagged it as a generic noise tag to hide from display (see above), without anyone connecting that to the distribution problem. Fix applied: `style_classical_invisible` is now stripped before vectorization and treated as absent rather than as a real tag, in both the scoring layer and the shared-tag display, so films no longer match on sharing nothing.
+**LLM tagger bias toward modal categories**  Measuring my own tagger's output distribution surfaced a real skew: the modal tag on several helix dimensions covers a large share of tagged films, most notably `helix_pro` (protagonist archetype), where `reluctant_hero` alone accounts for 40.1% of the 25,496 films tagged on that dimension. `helix_str` (narrative structure) shows the same pattern - `character_study` covers 40.0%. `helix_sty` (cinematic style) was the most extreme: `style_classical_invisible` covered 75.7%. This is the classic LLM-tagging failure mode - when uncertain, the model defaults to the most generic available category. IDF weighting (above) is the general mitigation for `helix_pro` and `helix_str`, where the skew, while real, still leaves room for other values to carry signal. `helix_sty` crossed a different line: at 75.7% coverage, `style_classical_invisible` wasn't signaling "this film has a classical, invisible style" so much as "the tagger had nothing distinctive to say" - the UI's explainability layer had already independently flagged it as a generic noise tag to hide from display (see above), without anyone connecting that to the distribution problem. Fix applied: `style_classical_invisible` is now stripped before vectorization and treated as absent rather than as a real tag, in both the scoring layer and the shared-tag display, so films no longer match on sharing nothing.
 
 ---
 
