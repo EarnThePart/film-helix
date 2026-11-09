@@ -174,6 +174,14 @@ BARREN_RECHECK_DAYS = 90
 #Star Wars (1.58M votes, no wiki plot) and 12 Monkeys forever. Films at or above
 #this threshold stay eligible at any age, still bounded by MAX_FETCH_ATTEMPTS.
 HIGH_VALUE_VOTES = 50000
+#A valid film that has NEVER been attempted gets exactly one wiki/poster try at any
+#age if it has at least this many votes (= the Phase 1b acquisition threshold).
+#Without this, films acquired at 5-10K votes were valid but could never get a plot
+#(older + under HIGH_VALUE_VOTES => "backlog", and BACKLOG_LIMIT=0): 782 films as of
+#2026-11-09, e.g. Lux Aeterna (9K votes, plot exists). Only attempts==0 qualifies, so
+#this never causes a re-fetch. Deliberately NOT applied to RT: RT misses are the slow
+#ones and old low-vote films almost never have a score.
+FIRST_ATTEMPT_MIN_VOTES = 5000
 #Old films are NOT auto-attempted. A miss on a pre-2000 obscurity costs ~10s
 #(Wikidata lookup + three title-variant queries, each with its own sleep) and
 #almost never succeeds — draining that backlog automatically added hours per run
@@ -1813,12 +1821,29 @@ NON_FILM_ARTICLE_PATTERNS = (
 )
 
 
+_NON_FILM_QUALIFIER_RE = re.compile(
+    r"\((?:[^)]*\s)?(album|song|single|band|character|characters|novel|novella|book|"
+    r"comics?|comic book|tv series|television series|video game|franchise|film series|"
+    r"soundtrack|ep|musical|opera|play|poem|magazine)\)")
+
+
 def _non_film_article_type(article_title):
     """Return the offending qualifier if the article is not about a film."""
-    lower = str(article_title or "").lower()
+    lower = str(article_title or "").lower().strip()
     for pat in NON_FILM_ARTICLE_PATTERNS:
         if pat in lower:
             return pat.strip("()")
+    #"Bloom (Beach House album)", "David North (character)": the qualifier ENDS in a
+    #non-film noun but is not the bare "(album)" form the tuple above matches.
+    m = _NON_FILM_QUALIFIER_RE.search(lower)
+    if m:
+        return m.group(1)
+    #Structural non-film pages: "List of American films of 2026", "Chinese people",
+    #"2019 college admissions bribery scandal", "Newton's laws of motion".
+    if lower.startswith(("list of ", "lists of ")):
+        return "list page"
+    if lower.endswith((" scandal", " laws of motion")):
+        return "topic page"
     return None
 
 
@@ -1993,9 +2018,18 @@ def _fetch_wiki_plot(title, year, tconst=None):
         wiki_title = _wikidata_title_from_tconst(tconst, title)
         if wiki_title:
             print(f"    [Wikidata] {tconst} → {wiki_title!r}")
-            result = _fetch_wiki_extract(wiki_title, headers)
-            if result:
-                return result
+            #Wikidata is trusted on TITLE (alternate/foreign names are legitimate) but
+            #not on page TYPE or YEAR: 2026-11-09 it handed us "Chinese people",
+            #"List of American films of 2026", an album, a character page, and
+            #wrong-year films. Reject those via via_redirect=True (skips the title
+            #comparison only; non-film-page and year checks still apply).
+            _bad = _wiki_article_mismatch(title, year, wiki_title, via_redirect=True)
+            if _bad:
+                print(f"    [Wikidata] rejected: {_bad}")
+            else:
+                result = _fetch_wiki_extract(wiki_title, headers)
+                if result:
+                    return result
             time.sleep(WIKI_SLEEP)
 
     #title-based fallback. Every variant is title-verified: these queries are
@@ -2023,7 +2057,8 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None,
     since_params = [since_cutoff] if since_cutoff else []
 
     rows = conn.execute(f"""
-        SELECT id, title, release_date, tconst, vote_count
+        SELECT id, title, release_date, tconst, vote_count,
+               COALESCE(wiki_attempts, 0) AS attempts
         FROM movies
         WHERE wiki_plot IS NULL
           AND is_valid = 1
@@ -2032,7 +2067,8 @@ def run_wiki_plots(conn, dry_run, min_votes=None, since_cutoff=None,
           {w_frag}
         ORDER BY CAST(vote_count AS REAL) DESC
     """, [threshold] + since_params + w_params).fetchall()
-    rows = _bounded_backlog(rows, recent_years, backlog_limit, "WIKI")
+    rows = _bounded_backlog(rows, recent_years, backlog_limit, "WIKI",
+                            first_attempt_votes=FIRST_ATTEMPT_MIN_VOTES)
     log.info(f"  {len(rows):,} films eligible for a wiki plot fetch "
              f"(min_votes={threshold:,}, attempts < {MAX_FETCH_ATTEMPTS}, "
              f"recent window {recent_years}y)")
@@ -2212,7 +2248,7 @@ def _fetch_rt_scrape(row):
     return (row["id"], None)
 
 
-def _bounded_backlog(rows, recent_years, limit, label):
+def _bounded_backlog(rows, recent_years, limit, label, first_attempt_votes=None):
     """Split candidates into always-do films and a capped old-film backlog.
 
     Always-do = released within `recent_years` OR carrying >= HIGH_VALUE_VOTES.
@@ -2230,7 +2266,12 @@ def _bounded_backlog(rows, recent_years, limit, label):
             high_value = float(r["vote_count"] or 0) >= HIGH_VALUE_VOTES
         except (KeyError, IndexError, TypeError, ValueError):
             high_value = False
-        (keep if (is_recent or high_value) else old).append(r)
+        try:
+            first_try = (first_attempt_votes is not None and int(r["attempts"] or 0) == 0
+                         and float(r["vote_count"] or 0) >= first_attempt_votes)
+        except (KeyError, IndexError, TypeError, ValueError):
+            first_try = False
+        (keep if (is_recent or high_value or first_try) else old).append(r)
     kept_old = old[:limit]
     if old or keep:
         log.info(f"    [{label}] {len(keep):,} recent-or-popular + "
@@ -2251,12 +2292,14 @@ def run_posters_scores(conn, dry_run, since_cutoff=None, skip_rt_backlog=False,
     p_frag, p_params = _fetch_eligibility_sql(
         "poster_status", "poster_checked_at", "poster_attempts", recent_years, retry_exhausted)
     poster_rows = conn.execute(f"""
-        SELECT id, release_date, vote_count FROM movies
+        SELECT id, release_date, vote_count,
+               COALESCE(poster_attempts, 0) AS attempts FROM movies
         WHERE (poster IS NULL OR poster='') AND is_valid=1
           {since_clause} {p_frag}
         ORDER BY CAST(vote_count AS REAL) DESC
     """, since_params + p_params).fetchall()
-    poster_rows = _bounded_backlog(poster_rows, recent_years, backlog_limit, "POSTER")
+    poster_rows = _bounded_backlog(poster_rows, recent_years, backlog_limit, "POSTER",
+                                   first_attempt_votes=FIRST_ATTEMPT_MIN_VOTES)
 
     #RT via OMDb (needs a tconst)
     r_frag, r_params = _fetch_eligibility_sql(
@@ -2879,7 +2922,7 @@ def run_cache_rebuild(dry_run):
     log.info("  Encoding overview embeddings...")
     overviews = df["overview"].tolist()
     sem_embs = model.encode(
-        overviews, batch_size=256, show_progress_bar=True,
+        overviews, batch_size=64, show_progress_bar=True,  #256 OOM'd on MPS 2026-11-08
         convert_to_numpy=True, normalize_embeddings=True,
     ).astype(np.float32)
     np.save(CACHE_FILES["semantic"], sem_embs)
@@ -2903,10 +2946,24 @@ def run_cache_rebuild(dry_run):
     wiki_sem = np.zeros((n, EMB_DIM), dtype=np.float32)
     if film_chunks:
         texts_only = [c[1] for c in film_chunks]
-        all_embs = model.encode(
-            texts_only, batch_size=64, show_progress_bar=True,
-            convert_to_numpy=True, normalize_embeddings=False,
-        )
+        #Encode in slices and release the MPS allocator cache between them: one giant
+        #encode() call OOM'd at the 20 GiB MPS cap on 2026-11-08 (cache grew unbounded).
+        import torch
+        #MPS still OOM'd on the 16 GB Mac even with slicing (11-08, 11-09): run this
+        #encode on CPU. Slower, but it cannot hit the MPS allocation cap.
+        model = model.to("cpu")
+        SLICE = 4096
+        parts = []
+        for s in range(0, len(texts_only), SLICE):
+            parts.append(model.encode(
+                texts_only[s:s + SLICE], batch_size=64, show_progress_bar=False,
+                convert_to_numpy=True, normalize_embeddings=False,
+            ))
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            if (s // SLICE) % 10 == 0:
+                log.info(f"    wiki chunks encoded: {min(s + SLICE, len(texts_only)):,}/{len(texts_only):,}")
+        all_embs = np.concatenate(parts)
         counts = np.zeros(n, dtype=np.int32)
         for (film_idx, _), emb in zip(film_chunks, all_embs):
             wiki_sem[film_idx] += emb

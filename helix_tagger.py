@@ -52,15 +52,34 @@ MAX_TOKENS      = 1024
 SLEEP_BETWEEN   = 0.5
 PROGRESS_EVERY  = 50
 
-PRICE_INPUT       = 0.80
-PRICE_OUTPUT      = 4.00
-PRICE_CACHE_WRITE = 1.00
-PRICE_CACHE_READ  = 0.08
+#Haiku 4.5 list prices, $/MTok (verified 2026-11-09). These were Haiku 3.5's rates
+#(0.80/4.00/1.00/0.08), which made every cost readout and the --max-cost circuit
+#breaker 20% too low.
+PRICE_INPUT       = 1.00
+PRICE_OUTPUT      = 5.00
+PRICE_CACHE_WRITE = 1.25   #5-minute cache write = 1.25x input
+PRICE_CACHE_READ  = 0.10   #cache read = 0.1x input
 
 MAX_TAG_ATTEMPTS       = 2   # give up after this many genuinely-empty results
 EXPECTED_COST_PER_FILM = 0.0045
 VELOCITY_WINDOW        = 50
 VELOCITY_CEILING       = 0.008
+
+#Re-tagging policy (2026-11-09). A film that already has tags is NOT re-queued just
+#because some fields are empty (that re-billed ~160 tagged films and let Haiku
+#overwrite them with different judgment calls). It is re-queued only when the
+#inputs it was tagged on were thin and have since been enriched.
+STUB_PLOT_CHARS        = 500   #plot at tagging time shorter than this = "stub"
+ENRICH_MIN_PLOT_GROWTH = 400   #...and it must have grown by at least this many chars
+STUB_KEYWORDS          = 5     #keyword count at tagging time below this = "thin"
+ENRICH_MIN_KW_GROWTH   = 5     #...and it must have gained at least this many tokens
+ENRICH_WINDOW_DAYS     = 365   #enrichment re-tags only for films released this recently...
+ENRICH_HIGH_VALUE_VOTES = 50000  #...or this popular (same bar as weekly_refresh HIGH_VALUE_VOTES)
+AUDIT_CSV_PATH         = "data/helix_retag_audit.csv"
+HELIX_FIELDS = ["helix_pro", "helix_dyn", "helix_thm", "helix_str",
+                "helix_ton", "helix_spl", "helix_dom", "helix_sty"]
+KW_COUNT_SQL = ("(CASE WHEN TRIM(COALESCE(dna_keywords,''))='' THEN 0 "
+                "ELSE LENGTH(TRIM(dna_keywords)) - LENGTH(REPLACE(TRIM(dna_keywords),' ','')) + 1 END)")
 
 VALID_TAGS = {
     #PROTAGONIST
@@ -149,6 +168,12 @@ def ensure_columns(conn):
         ("helix_sty",            "TEXT"),
         ("helix_low_confidence", "INTEGER"),
         ("helix_attempts",       "INTEGER"),
+        #Enrichment snapshot, recorded at tagging time (2026-11-09). Lets the queue
+        #tell "this film's plot/keywords have since been filled in" from "nothing
+        #changed" without re-tagging (and re-billing) everything.
+        ("helix_wiki_chars",     "INTEGER"),   #LENGTH(wiki_plot) when last tagged
+        ("helix_kw_count",       "INTEGER"),   ## of dna_keywords tokens when last tagged
+        ("helix_tagged_at",      "TEXT"),      #ISO timestamp of last successful tagging
     ]:
         if col not in cols:
             conn.execute(f"ALTER TABLE movies ADD COLUMN {col} {dtype}")
@@ -463,10 +488,23 @@ def main():
                              "re-enter the queue forever, costing money each run without converging.")
     parser.add_argument("--min-votes",      type=int,   default=2000,
                         help="Min IMDb vote_count for normal-queue targeting (default: 2000)")
+    parser.add_argument("--skip-suspect-wiki", action="store_true",
+                        help="Skip films whose stored wiki_title is a non-film page "
+                             "(list/album/franchise/etc. = wrong plot). Checked with "
+                             "weekly_refresh._non_film_article_type.")
     parser.add_argument("--retry-exhausted", action="store_true",
                         help=f"Also retry films that already returned empty {MAX_TAG_ATTEMPTS}+ times "
                              "(normally given up on — same non-convergence problem as documentaries, "
                              "just for anthology/sketch films with no single throughline protagonist)")
+    parser.add_argument("--fill-partial",   action="store_true",
+                        help="Also target films with 1-5 of 8 helix fields filled (3+ empty). Fill-only: "
+                             "existing tags are kept, only blank fields are filled. Off by default.")
+    parser.add_argument("--partial-only",   action="store_true",
+                        help="Target ONLY partially tagged films (3-7 empty fields), fill-only. "
+                             "Skips untagged and enrichment films. Implies the --fill-partial rules.")
+    parser.add_argument("--validated-since", type=str, default=None,
+                        help="Only films whose validated_at >= this ISO date (e.g. 2026-11-09) — "
+                             "limits a run to newly-valid films.")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -544,23 +582,71 @@ def main():
         #before this existed. Use --retry-exhausted to override.
         attempts_clause = "" if args.retry_exhausted else \
             f"AND COALESCE(helix_attempts, 0) < {MAX_TAG_ATTEMPTS}"
+        #Queue = (a) fresh: ALL 8 fields empty, within the attempt cap; OR
+        #        (b) enrich: previously tagged on a thin plot/keyword set that has since
+        #            been filled in, and the film is recent or high-vote (never an
+        #            obscure old film); OR
+        #        (c) --fill-partial only: 3-7 fields empty (fill-only, never overwrites).
+        attempts_ok = "1=1" if args.retry_exhausted else \
+            f"COALESCE(helix_attempts, 0) < {MAX_TAG_ATTEMPTS}"
+        #grew_cond: the film's inputs were thin at the last attempt and have since been
+        #filled in. The snapshot is recorded on EVERY attempt (success, empty, or
+        #failed), so a film that came back empty is not re-billed until this is true.
+        grew_cond = f"""(
+                (COALESCE(helix_wiki_chars, 0) < {STUB_PLOT_CHARS}
+                 AND LENGTH(COALESCE(wiki_plot, '')) >= COALESCE(helix_wiki_chars, 0) + {ENRICH_MIN_PLOT_GROWTH})
+                OR
+                (COALESCE(helix_kw_count, 0) < {STUB_KEYWORDS}
+                 AND {KW_COUNT_SQL} >= COALESCE(helix_kw_count, 0) + {ENRICH_MIN_KW_GROWTH})
+            )"""
+        #Already-tagged films are only re-tagged if recent or high-vote (never obscure+old).
+        enrich_cond = f"""(helix_tagged_at IS NOT NULL
+            AND {grew_cond}
+            AND (release_date >= date('now', '-{ENRICH_WINDOW_DAYS} days')
+                 OR CAST(vote_count AS REAL) >= {ENRICH_HIGH_VALUE_VOTES}))"""
+        #Never-successfully-tagged films: first try always; a retry only after the inputs
+        #grew (no age gate — --min-votes already keeps obscure films out).
+        fresh_ok = "1=1" if args.retry_exhausted else \
+            f"(COALESCE(helix_attempts, 0) = 0 OR (helix_wiki_chars IS NOT NULL AND {grew_cond}))"
+        partial_cond = f"({empty_field_count} BETWEEN 3 AND 7 AND {attempts_ok})"
+        partial_clause = f"OR {partial_cond}" if args.fill_partial else ""
+        #--partial-only: ONLY the partially-tagged films (fill-only), no fresh/enrich.
+        queue_where = partial_cond if args.partial_only else f"""(
+                    ({empty_field_count} = 8 AND {fresh_ok})
+                    OR {enrich_cond}
+                    {partial_clause}
+              )"""
+        since_clause = "AND validated_at >= ?" if args.validated_since else ""
+        params = [args.min_votes] + ([args.validated_since] if args.validated_since else [])
         rows = conn.execute(f"""
-            SELECT id, title, release_date, vote_count, wiki_plot, wiki_title, overview
+            SELECT id, title, release_date, vote_count, wiki_plot, wiki_title, overview,
+                   CASE WHEN {empty_field_count} = 8 THEN 'fresh'
+                        WHEN {enrich_cond} THEN 'enrich'
+                        ELSE 'partial' END AS queue_mode
             FROM movies
             WHERE is_valid = 1
               AND overview IS NOT NULL AND overview != ''
-              AND {empty_field_count} >= 3
+              AND {queue_where}
               {doc_clause}
-              {attempts_clause}
               AND CAST(vote_count AS REAL) >= ?
+              {since_clause}
             ORDER BY {order}
-        """, (args.min_votes,)).fetchall()
+        """, params).fetchall()
+
+    if args.skip_suspect_wiki and not ids_mode:
+        from weekly_refresh import _non_film_article_type
+        before = len(rows)
+        rows = [r for r in rows if not _non_film_article_type(r["wiki_title"])]
+        print(f"[INIT] --skip-suspect-wiki: skipped {before - len(rows):,} films with a non-film wiki page")
 
     if args.limit:
         rows = rows[:args.limit]
 
     total = len(rows)
     print(f"[INIT] Films to tag: {total:,}")
+    if not ids_mode:
+        print("[INIT] By queue mode: " + ", ".join(
+            f"{m}={n:,}" for m, n in Counter(r['queue_mode'] for r in rows).most_common()))
     print(f"[INIT] Max cost circuit breaker: ${args.max_cost:.2f}")
     print(f"[INIT] Estimated cost (with caching): ~${total * EXPECTED_COST_PER_FILM:.2f}")
     print()
@@ -641,28 +727,66 @@ def main():
 
         if parsed is None:
             errors += 1
-            conn.execute("UPDATE movies SET helix_attempts=COALESCE(helix_attempts,0)+1 WHERE id=?", (tmdb_id,))
+            #Record the input snapshot even though nothing was tagged, so this film is
+            #not retried until its plot/keywords actually grow.
+            conn.execute(f"""UPDATE movies SET helix_attempts=COALESCE(helix_attempts,0)+1,
+                helix_wiki_chars=LENGTH(COALESCE(wiki_plot,'')), helix_kw_count={KW_COUNT_SQL}
+                WHERE id=?""", (tmdb_id,))
             conn.commit()
             if not ids_mode:
                 save_checkpoint(tmdb_id, checkpoint)
             time.sleep(SLEEP_BETWEEN)
             continue
 
-        conn.execute("""
+        #NEVER blank out an existing tag, and never silently replace one unless this is
+        #an explicit enrichment/ids-file retag. Haiku is not deterministic: re-running
+        #a tagged film can return different tags, or empty buckets, and on 2026-11-09
+        #that wiped 30 previously-filled fields. A questionable tag beats no tag.
+        mode = row["queue_mode"] if "queue_mode" in row.keys() else ("retag" if ids_mode else "fresh")
+        overwrite = mode in ("enrich", "retag")
+        cur_vals = conn.execute(
+            f"SELECT {', '.join(HELIX_FIELDS)} FROM movies WHERE id=?", (tmdb_id,)).fetchone()
+        merged = {}
+        audit_rows = []
+        for f in HELIX_FIELDS:
+            old = ((cur_vals[f] if cur_vals else None) or "")
+            new = (parsed[f] or "")
+            if not new:
+                val = old                          #empty result: keep what we had
+            elif old and not overwrite:
+                val = old                          #fill-only: keep existing tag
+            else:
+                val = new
+            if old and new and old != new and overwrite:
+                audit_rows.append([datetime.now().isoformat(timespec="seconds"), tmdb_id,
+                                   title, mode, f, old, new])
+            merged[f] = val if val else parsed[f]
+        if audit_rows:
+            new_file = not Path(AUDIT_CSV_PATH).exists()
+            with open(AUDIT_CSV_PATH, "a", newline="", encoding="utf-8") as af:
+                aw = csv.writer(af)
+                if new_file:
+                    aw.writerow(["ts", "tmdb_id", "title", "mode", "field", "old", "new"])
+                aw.writerows(audit_rows)
+        any_tag = any(merged[f] for f in HELIX_FIELDS)
+        lowconf_sql = "helix_low_confidence=?," if mode != "partial" else ""
+        lowconf_params = [parsed["helix_low_confidence"]] if mode != "partial" else []
+        conn.execute(f"""
             UPDATE movies SET
                 helix_pro=?, helix_dyn=?, helix_thm=?,
                 helix_str=?, helix_ton=?, helix_spl=?,
                 helix_dom=?, helix_sty=?,
-                helix_low_confidence=?,
+                {lowconf_sql}
+                helix_wiki_chars=LENGTH(COALESCE(wiki_plot, '')),
+                helix_kw_count={KW_COUNT_SQL},
+                helix_tagged_at=CASE WHEN ? THEN ? ELSE helix_tagged_at END,
                 helix_attempts=COALESCE(helix_attempts, 0) + 1
             WHERE id=?
-        """, (
-            parsed["helix_pro"], parsed["helix_dyn"], parsed["helix_thm"],
-            parsed["helix_str"], parsed["helix_ton"], parsed["helix_spl"],
-            parsed["helix_dom"], parsed["helix_sty"],
-            parsed["helix_low_confidence"], tmdb_id,
-        ))
+        """, [merged[f] for f in HELIX_FIELDS] + lowconf_params +
+             [1 if any_tag else 0, datetime.now().isoformat(timespec="seconds"), tmdb_id])
         conn.commit()
+        for f in HELIX_FIELDS:
+            parsed[f] = merged[f]                 #so the printout/CSV show what was stored
 
         if not ids_mode:
             save_checkpoint(tmdb_id, checkpoint)
